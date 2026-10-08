@@ -100,7 +100,24 @@ func Load(p string) (*File, error) {
 		return nil, fmt.Errorf("%s has lockfile version %d; please upgrade faehigkeiten", p, f.Version)
 	}
 	f.Version = currentVersion
+	for _, e := range f.Skills {
+		if err := e.validate(); err != nil {
+			return nil, fmt.Errorf("%s: %w", p, err)
+		}
+	}
 	return f, nil
+}
+
+// validate rejects entries that could make file operations escape the skill
+// directories, e.g. from a tampered lockfile committed to a project.
+func (e Entry) validate() error {
+	if e.Name == "" || e.Name == "." || e.Name == ".." || strings.ContainsAny(e.Name, `/\`) {
+		return fmt.Errorf("invalid skill name %q", e.Name)
+	}
+	if e.Path != "" && e.Path != "." && !filepath.IsLocal(filepath.FromSlash(e.Path)) {
+		return fmt.Errorf("skill %s: invalid path %q", e.Name, e.Path)
+	}
+	return nil
 }
 
 // Path returns where the lockfile is stored.

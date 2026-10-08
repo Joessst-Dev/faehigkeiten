@@ -3,6 +3,8 @@ package source
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -13,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 )
 
@@ -40,6 +43,9 @@ func Normalize(input string) (string, error) {
 	}
 	if strings.HasPrefix(in, "file://") {
 		return in, nil
+	}
+	if strings.HasPrefix(strings.ToLower(in), "http://") {
+		return "", fmt.Errorf("refusing insecure source %q: use https:// or ssh", input)
 	}
 	if fi, err := os.Stat(in); err == nil && fi.IsDir() {
 		return filepath.Abs(in)
@@ -106,12 +112,13 @@ func (m *Manager) lock(key string) func() {
 var unsafeChars = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func (m *Manager) cachePath(src, ref string) string {
-	key := strings.TrimPrefix(strings.TrimPrefix(src, "https://"), "http://")
-	key = unsafeChars.ReplaceAllString(key, "_")
+	// The readable part may collide (a/b vs a_b); the hash keeps keys unique.
+	sum := sha256.Sum256([]byte(src + "\x00" + ref))
+	key := unsafeChars.ReplaceAllString(strings.TrimPrefix(src, "https://"), "_")
 	if ref != "" {
 		key += "@" + unsafeChars.ReplaceAllString(ref, "_")
 	}
-	return filepath.Join(m.CacheDir, "repos", key)
+	return filepath.Join(m.CacheDir, "repos", key+"-"+hex.EncodeToString(sum[:4]))
 }
 
 // Fetch makes src available on disk. Plain local directories are used in
@@ -128,18 +135,25 @@ func (m *Manager) Fetch(ctx context.Context, src, ref string, refresh bool) (*Ch
 	dir := m.cachePath(src, ref)
 	defer m.lock(dir)()
 
-	if !refresh {
-		if co, err := openCheckout(src, dir); err == nil {
+	if co, err := openCheckout(src, dir); err == nil {
+		if !refresh {
 			return co, nil
 		}
+		if err := pull(ctx, dir); err == nil {
+			return openCheckout(src, dir)
+		}
+		// Fall back to a fresh clone if the incremental update failed.
 	}
-	tmp := dir + ".tmp"
-	_ = os.RemoveAll(tmp)
 	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
 		return nil, err
 	}
+	// A unique temp dir keeps concurrent processes from clobbering each other.
+	tmp, err := os.MkdirTemp(filepath.Dir(dir), "."+filepath.Base(dir)+".tmp-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
 	if err := clone(ctx, src, ref, tmp); err != nil {
-		_ = os.RemoveAll(tmp)
 		return nil, err
 	}
 	if err := os.RemoveAll(dir); err != nil {
@@ -149,6 +163,47 @@ func (m *Manager) Fetch(ctx context.Context, src, ref string, refresh bool) (*Ch
 		return nil, err
 	}
 	return openCheckout(src, dir)
+}
+
+// pull updates a shallow single-branch clone to the latest commit of its
+// branch. Detached checkouts (tags) are not updated and report an error so
+// the caller re-clones.
+func pull(ctx context.Context, dir string) error {
+	repo, err := git.PlainOpen(dir)
+	if err != nil {
+		return err
+	}
+	head, err := repo.Head()
+	if err != nil {
+		return err
+	}
+	if !head.Name().IsBranch() {
+		return errors.New("not on a branch")
+	}
+	branch := head.Name().Short()
+	remoteRef := plumbing.NewRemoteReferenceName("origin", branch)
+	err = repo.FetchContext(ctx, &git.FetchOptions{
+		RefSpecs: []config.RefSpec{config.RefSpec("+" + head.Name().String() + ":" + remoteRef.String())},
+		Depth:    1,
+		Tags:     git.NoTags,
+		Force:    true,
+	})
+	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+		return err
+	}
+	ref, err := repo.Reference(remoteRef, true)
+	if err != nil {
+		return err
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		return err
+	}
+	if err := wt.Reset(&git.ResetOptions{Commit: ref.Hash(), Mode: git.HardReset}); err != nil {
+		return err
+	}
+	// Remove files that upstream deleted but the reset left behind.
+	return wt.Clean(&git.CleanOptions{Dir: true})
 }
 
 func clone(ctx context.Context, src, ref, dir string) error {

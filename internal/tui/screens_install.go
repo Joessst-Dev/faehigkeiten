@@ -538,7 +538,7 @@ func (s *updatesScreen) check() tea.Cmd {
 		if err != nil {
 			return checkedMsg{err: err}
 		}
-		return checkedMsg{in: in, statuses: update.Check(e.ctx, e.app.Sources, in.Lock)}
+		return checkedMsg{in: in, statuses: update.Check(e.ctx, e.app.Sources, in)}
 	}))
 }
 
@@ -559,9 +559,16 @@ func (s *updatesScreen) Update(msg tea.Msg) tea.Cmd {
 			switch {
 			case st.Err != nil:
 				it.Disabled, it.Badge, it.Desc = true, "error", st.Err.Error()
+			case st.Available && st.Modified:
+				// Not preselected: updating overwrites the local edits.
+				it.Badge = "update available • locally modified"
+				it.Desc = fmt.Sprintf("%s: %s → %s • updating overwrites your local changes", st.Entry.Tracking, short(st.Current), short(st.Latest))
 			case st.Available:
 				it.Checked, it.Badge = true, "update available"
 				it.Desc = fmt.Sprintf("%s: %s → %s", st.Entry.Tracking, short(st.Current), short(st.Latest))
+			case st.Modified:
+				it.Disabled, it.Badge = true, "locally modified"
+				it.Desc = fmt.Sprintf("%s: %s (up to date)", st.Entry.Tracking, short(st.Current))
 			default:
 				it.Disabled, it.Desc = true, fmt.Sprintf("%s: %s (up to date)", st.Entry.Tracking, short(st.Current))
 			}
@@ -633,6 +640,16 @@ func (s *updatesScreen) apply() tea.Cmd {
 	}))
 }
 
+func (s *updatesScreen) modifiedUpdates() int {
+	n := 0
+	for _, st := range s.statuses {
+		if st.Err == nil && st.Available && st.Modified {
+			n++
+		}
+	}
+	return n
+}
+
 func (s *updatesScreen) View() string {
 	if s.busy != "" {
 		return s.spin.View() + " " + s.busy + " …"
@@ -642,7 +659,12 @@ func (s *updatesScreen) View() string {
 	}
 	var b strings.Builder
 	b.WriteString(subtleStyle.Render("Untracked skills are not checked."))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	if n := s.modifiedUpdates(); n > 0 {
+		b.WriteString(warnStyle.Render(fmt.Sprintf(
+			"Warning: %d skill(s) with updates were modified locally. Updating them overwrites your changes, so they are not selected.", n)))
+	}
+	b.WriteString("\n")
 	b.WriteString(s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4))
 	if s.msg != "" {
 		b.WriteString("\n")

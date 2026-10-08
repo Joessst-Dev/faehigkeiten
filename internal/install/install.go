@@ -52,6 +52,9 @@ type Request struct {
 	Checkout *source.Checkout
 	Agents   []agent.Agent
 	Tracking lock.Tracking
+	// Name overrides the directory name derived from the skill's name. Updates
+	// use it to keep the name recorded in the lockfile.
+	Name string
 	// Force overwrites existing directories that are not managed by this lockfile.
 	Force bool
 }
@@ -106,6 +109,12 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 		return lock.Entry{}, fmt.Errorf("skill %s has no version; use hash tracking instead", req.Skill.Name)
 	}
 	name := DirName(req.Skill.Name)
+	if req.Name != "" {
+		if req.Name != filepath.Base(req.Name) || req.Name == "." || req.Name == ".." {
+			return lock.Entry{}, fmt.Errorf("invalid skill name %q", req.Name)
+		}
+		name = req.Name
+	}
 	dirs, err := in.Target.Dirs(req.Agents)
 	if err != nil {
 		return lock.Entry{}, err
@@ -129,10 +138,12 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 		}
 	}
 
-	for _, d := range dirs {
-		if err := replaceDir(req.Skill.Dir, filepath.Join(d, name)); err != nil {
-			return lock.Entry{}, err
-		}
+	targets := make([]string, len(dirs))
+	for i, d := range dirs {
+		targets[i] = filepath.Join(d, name)
+	}
+	if err := replaceDirs(req.Skill.Dir, targets); err != nil {
+		return lock.Entry{}, err
 	}
 	// Remove copies for agents that are no longer selected.
 	for _, d := range prevDirs {
@@ -155,16 +166,41 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 	for _, a := range req.Agents {
 		entry.Agents = append(entry.Agents, a.ID)
 	}
-	switch req.Tracking {
-	case lock.TrackVersion:
+	if req.Tracking == lock.TrackVersion {
 		entry.Version = req.Skill.Version
-	case lock.TrackHash:
+	}
+	if req.Tracking != lock.TrackNone {
+		// The hash describes the installed content. Hash tracking compares it
+		// with upstream; all tracked skills use it to detect local edits.
 		if entry.Hash, err = skill.Hash(req.Skill.Dir); err != nil {
 			return lock.Entry{}, err
 		}
 	}
 	in.Lock.Upsert(entry)
 	return entry, nil
+}
+
+// Modified reports whether an installed copy of the skill differs from the
+// content recorded in the lockfile, i.e. it was edited locally. Entries
+// without a recorded hash (untracked skills) are never reported.
+func (in *Installer) Modified(e lock.Entry) (bool, error) {
+	if e.Hash == "" {
+		return false, nil
+	}
+	for _, d := range in.entryDirs(e) {
+		dir := filepath.Join(d, e.Name)
+		if !exists(dir) {
+			continue // a missing copy is restored by the next install
+		}
+		h, err := skill.Hash(dir)
+		if err != nil {
+			return false, err
+		}
+		if h != e.Hash {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Uninstall removes the named skill from every agent directory and from the
@@ -208,24 +244,38 @@ func exists(p string) bool {
 	return err == nil
 }
 
-// replaceDir copies src to dst via a temporary sibling so a failed copy never
-// leaves a half-written skill behind.
-func replaceDir(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+// replaceDirs copies src to every destination. All copies are first written
+// to temporary siblings and only swapped in once every copy succeeded, so a
+// failed copy leaves all destinations untouched.
+func replaceDirs(src string, dsts []string) error {
+	tmps := make([]string, 0, len(dsts))
+	defer func() {
+		for _, t := range tmps {
+			os.RemoveAll(t)
+		}
+	}()
+	for _, dst := range dsts {
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		tmp, err := os.MkdirTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp-")
+		if err != nil {
+			return err
+		}
+		tmps = append(tmps, tmp)
+		if err := copyTree(src, tmp); err != nil {
+			return err
+		}
 	}
-	tmp, err := os.MkdirTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp-")
-	if err != nil {
-		return err
+	for i, dst := range dsts {
+		if err := os.RemoveAll(dst); err != nil {
+			return err
+		}
+		if err := os.Rename(tmps[i], dst); err != nil {
+			return err
+		}
 	}
-	defer os.RemoveAll(tmp)
-	if err := copyTree(src, tmp); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(dst); err != nil {
-		return err
-	}
-	return os.Rename(tmp, dst)
+	return nil
 }
 
 func copyTree(src, dst string) error {
@@ -410,11 +460,12 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 			// Unknown local version: any upstream version counts as an update.
 			entry.Version = "0.0.0"
 		}
-	case lock.TrackHash:
-		entry.Hash = local
-	case lock.TrackNone:
+	case lock.TrackHash, lock.TrackNone:
 	default:
 		return lock.Entry{}, fmt.Errorf("invalid tracking mode %q", entry.Tracking)
+	}
+	if entry.Tracking != lock.TrackNone {
+		entry.Hash = local
 	}
 	in.Lock.Upsert(entry)
 	return entry, nil

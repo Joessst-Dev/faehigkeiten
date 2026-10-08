@@ -2,6 +2,7 @@ package update_test
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 
 	"github.com/go-git/go-git/v5"
@@ -90,7 +91,7 @@ var _ = Describe("Check and Apply", func() {
 	})
 
 	It("reports nothing when upstream is unchanged and skips untracked skills", func() {
-		sts := update.Check(ctx, mgr, lf)
+		sts := update.Check(ctx, mgr, in)
 		Expect(sts).To(HaveLen(2))
 		for _, s := range sts {
 			Expect(s.Err).NotTo(HaveOccurred())
@@ -105,7 +106,7 @@ var _ = Describe("Check and Apply", func() {
 			"skills/loose/SKILL.md": testutil.SkillMD("loose", "changed", ""),
 		}, "bump")).To(Succeed())
 
-		sts := update.Check(ctx, mgr, lf)
+		sts := update.Check(ctx, mgr, in)
 		ver, hash := statusFor(sts, "ver"), statusFor(sts, "hash")
 		Expect(ver.Available).To(BeTrue())
 		Expect(ver.Current).To(Equal("1.0.0"))
@@ -120,7 +121,7 @@ var _ = Describe("Check and Apply", func() {
 		Expect(e.Version).To(Equal("1.1.0"))
 		Expect(filepath.Join(project, ".claude", "skills", "hash", "extra.md")).To(BeAnExistingFile())
 
-		for _, s := range update.Check(ctx, mgr, lf) {
+		for _, s := range update.Check(ctx, mgr, in) {
 			Expect(s.Available).To(BeFalse())
 		}
 	})
@@ -130,11 +131,85 @@ var _ = Describe("Check and Apply", func() {
 		_, err := wt.Remove("skills/ver/SKILL.md")
 		Expect(err).NotTo(HaveOccurred())
 		Expect(testutil.Commit(repo, origin, nil, "remove")).To(Succeed())
-		Expect(statusFor(update.Check(ctx, mgr, lf), "ver").Err).To(HaveOccurred())
+		Expect(statusFor(update.Check(ctx, mgr, in), "ver").Err).To(HaveOccurred())
 	})
 
 	It("refuses to apply when no update is available", func() {
-		_, err := update.Apply(in, statusFor(update.Check(ctx, mgr, lf), "ver"))
+		_, err := update.Apply(in, statusFor(update.Check(ctx, mgr, in), "ver"))
 		Expect(err).To(HaveOccurred())
+	})
+
+	bump := func() {
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/ver/SKILL.md": testutil.SkillMD("ver", "versioned", "1.1.0"),
+		}, "bump")).To(Succeed())
+	}
+
+	It("flags locally modified skills", func() {
+		installed := filepath.Join(project, ".claude", "skills", "ver", "SKILL.md")
+		Expect(os.WriteFile(installed, []byte(testutil.SkillMD("ver", "edited", "1.0.0")), 0o644)).To(Succeed())
+		st := statusFor(update.Check(ctx, mgr, in), "ver")
+		Expect(st.Modified).To(BeTrue())
+		Expect(st.Available).To(BeFalse())
+
+		bump()
+		st = statusFor(update.Check(ctx, mgr, in), "ver")
+		Expect(st.Modified).To(BeTrue())
+		Expect(st.Available).To(BeTrue())
+		Expect(statusFor(update.Check(ctx, mgr, in), "hash").Modified).To(BeFalse())
+	})
+
+	It("keeps agents that are unknown on this machine", func() {
+		e, _ := lf.Get("ver")
+		e.Agents = append(e.Agents, "teammates-agent")
+		lf.Upsert(e)
+		bump()
+		updated, err := update.Apply(in, statusFor(update.Check(ctx, mgr, in), "ver"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(updated.Agents).To(Equal([]string{"claude-code", "teammates-agent"}))
+		Expect(updated.Version).To(Equal("1.1.0"))
+		stored, _ := lf.Get("ver")
+		Expect(stored.Agents).To(ContainElement("teammates-agent"))
+	})
+
+	It("fails clearly when none of the agents are known", func() {
+		e, _ := lf.Get("ver")
+		e.Agents = []string{"teammates-agent"}
+		lf.Upsert(e)
+		bump()
+		_, err := update.Apply(in, statusFor(update.Check(ctx, mgr, in), "ver"))
+		Expect(err).To(MatchError(ContainSubstring("known on this machine")))
+	})
+
+	It("keeps the directory name of an adopted skill", func() {
+		Expect(in.Uninstall("ver")).To(Succeed())
+		Expect(testutil.WriteFiles(project, map[string]string{
+			".claude/skills/My Ver/SKILL.md": testutil.SkillMD("ver", "versioned", "1.0.0"),
+		})).To(Succeed())
+		found := in.Unmanaged()
+		Expect(found).To(HaveLen(1))
+		co, err := mgr.Fetch(ctx, url, "", false)
+		Expect(err).NotTo(HaveOccurred())
+		skills, _ := skill.Discover(co.Dir)
+		var up skill.Skill
+		for _, sk := range skills {
+			if sk.Name == "ver" {
+				up = sk
+			}
+		}
+		_, err = in.Adopt(install.AdoptRequest{Found: found[0], Checkout: co, Upstream: &up, Tracking: lock.TrackVersion})
+		Expect(err).NotTo(HaveOccurred())
+
+		bump()
+		_, err = update.Apply(in, statusFor(update.Check(ctx, mgr, in), "My Ver"))
+		Expect(err).NotTo(HaveOccurred())
+		names := []string{}
+		for _, e := range lf.Skills {
+			names = append(names, e.Name)
+		}
+		Expect(names).To(ConsistOf("My Ver", "hash", "loose"))
+		Expect(filepath.Join(project, ".claude", "skills", "ver")).NotTo(BeAnExistingFile())
+		data, _ := os.ReadFile(filepath.Join(project, ".claude", "skills", "My Ver", "SKILL.md"))
+		Expect(string(data)).To(ContainSubstring("1.1.0"))
 	})
 })

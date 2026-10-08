@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/Masterminds/semver/v3"
 
+	"github.com/Joessst-Dev/faehigkeiten/internal/agent"
 	"github.com/Joessst-Dev/faehigkeiten/internal/install"
 	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
@@ -27,15 +29,20 @@ type Status struct {
 	// Latest is the upstream version or hash.
 	Latest    string
 	Available bool
-	Err       error
+	// Modified reports local edits to the installed copy; applying an update
+	// overwrites them.
+	Modified bool
+	Err      error
 
 	skill    skill.Skill
 	checkout *source.Checkout
 }
 
-// Check fetches the sources of all tracked entries and compares them with the
-// installed state. Untracked entries are skipped.
-func Check(ctx context.Context, f Fetcher, lf *lock.File) []Status {
+// Check fetches the sources of all tracked entries of the installer's
+// lockfile and compares them with the installed state. Untracked entries are
+// skipped.
+func Check(ctx context.Context, f Fetcher, in *install.Installer) []Status {
+	lf := in.Lock
 	type key struct{ src, ref string }
 	checkouts := map[key]*source.Checkout{}
 	fetchErrs := map[key]error{}
@@ -46,6 +53,9 @@ func Check(ctx context.Context, f Fetcher, lf *lock.File) []Status {
 			continue
 		}
 		st := Status{Entry: e}
+		if modified, err := in.Modified(e); err == nil {
+			st.Modified = modified
+		}
 		k := key{e.Source, e.Ref}
 		co, seen := checkouts[k]
 		err := fetchErrs[k]
@@ -112,18 +122,30 @@ func Apply(in *install.Installer, st Status) (lock.Entry, error) {
 	if !st.Available || st.checkout == nil {
 		return lock.Entry{}, fmt.Errorf("no update available for %s", st.Entry.Name)
 	}
-	agents, err := in.Registry.Lookup(st.Entry.Agents)
-	if err != nil {
-		return lock.Entry{}, err
+	// Agents defined only in someone else's configuration are skipped here but
+	// kept in the lockfile.
+	var agents []agent.Agent
+	for _, id := range st.Entry.Agents {
+		if a, ok := in.Registry.Get(id); ok {
+			agents = append(agents, a)
+		}
 	}
-	s := st.skill
-	// Keep the installed directory name even if upstream renamed the skill.
-	s.Name = st.Entry.Name
-	return in.Install(install.Request{
-		Skill:    s,
+	if len(agents) == 0 {
+		return lock.Entry{}, fmt.Errorf("none of the agents of %s (%s) are known on this machine", st.Entry.Name, strings.Join(st.Entry.Agents, ", "))
+	}
+	e, err := in.Install(install.Request{
+		Skill:    st.skill,
 		Checkout: st.checkout,
 		Agents:   agents,
 		Tracking: st.Entry.Tracking,
-		Force:    true,
+		// Keep the installed directory name even if upstream renamed the skill.
+		Name:  st.Entry.Name,
+		Force: true,
 	})
+	if err != nil {
+		return lock.Entry{}, err
+	}
+	e.Agents = st.Entry.Agents
+	in.Lock.Upsert(e)
+	return e, nil
 }

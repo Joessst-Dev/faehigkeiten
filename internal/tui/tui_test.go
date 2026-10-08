@@ -291,6 +291,35 @@ var _ = Describe("TUI", func() {
 		})
 	})
 
+	It("warns about updates that would overwrite local changes and does not select them", func() {
+		in, err := a.Installer(d.m.env.target)
+		Expect(err).NotTo(HaveOccurred())
+		co, skills, err := a.Load(context.Background(), origin, "", false)
+		Expect(err).NotTo(HaveOccurred())
+		claude, _ := a.Agents.Get("claude-code")
+		_, err = in.Install(install.Request{Skill: skills[0], Checkout: co, Agents: []agent.Agent{claude}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(in.Lock.Save()).To(Succeed())
+
+		notes := filepath.Join(project, ".claude", "skills", "alpha", "NOTES.md")
+		Expect(os.WriteFile(notes, []byte("mine"), 0o644)).To(Succeed())
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned skill", "1.1.0"),
+		}, "bump")).To(Succeed())
+
+		d.keys("down", "down", "down", "down", "enter") // Check for updates
+		v := d.view()
+		Expect(v).To(ContainSubstring("Warning: 1 skill(s) with updates were modified locally"))
+		Expect(v).To(ContainSubstring("[ ] alpha"))
+		Expect(v).To(ContainSubstring("locally modified"))
+		d.keys("enter") // nothing selected: nothing happens
+		Expect(notes).To(BeAnExistingFile())
+
+		d.keys("space", "enter") // explicitly selected: overwritten
+		Expect(d.view()).To(ContainSubstring("updated 1 skill(s)"))
+		Expect(notes).NotTo(BeAnExistingFile())
+	})
+
 	It("cancels the wizard when the target picker is closed", func() {
 		addRepo()
 		d.keys("enter", "esc")

@@ -205,7 +205,11 @@ func newCheckCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Check tracked skills for updates",
-		Args:  cobra.NoArgs,
+		Long: `Check tracked skills for updates. Skills whose installed files were edited
+locally are flagged, because updating them overwrites those edits.
+
+Exits with status 1 if any skill could not be checked.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			a, err := app.New()
 			if err != nil {
@@ -219,9 +223,12 @@ func newCheckCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			sts := update.Check(cmd.Context(), a.Sources, in.Lock)
-			n := printStatuses(cmd.OutOrStdout(), sts)
-			if n > 0 && exitCode {
+			sts := update.Check(cmd.Context(), a.Sources, in)
+			available, failed := printStatuses(cmd.OutOrStdout(), sts)
+			switch {
+			case failed > 0:
+				return ExitError{Code: 1}
+			case available > 0 && exitCode:
 				return ExitError{Code: 10}
 			}
 			return nil
@@ -232,22 +239,29 @@ func newCheckCommand() *cobra.Command {
 	return cmd
 }
 
-func printStatuses(w io.Writer, sts []update.Status) int {
+// printStatuses renders update statuses and returns how many updates are
+// available and how many checks failed.
+func printStatuses(w io.Writer, sts []update.Status) (available, failed int) {
 	if len(sts) == 0 {
 		fmt.Fprintln(w, "no tracked skills")
-		return 0
+		return 0, 0
 	}
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tTRACKING\tINSTALLED\tLATEST\tSTATUS")
-	n := 0
 	for _, s := range sts {
 		status := "up to date"
 		switch {
 		case s.Err != nil:
 			status = "error: " + s.Err.Error()
+			failed++
+		case s.Available && s.Modified:
+			status = "update available (locally modified, updating overwrites your changes)"
+			available++
 		case s.Available:
 			status = "update available"
-			n++
+			available++
+		case s.Modified:
+			status = "up to date (locally modified)"
 		}
 		cur, latest := s.Current, s.Latest
 		if s.Entry.Tracking == lock.TrackHash {
@@ -256,14 +270,21 @@ func printStatuses(w io.Writer, sts []update.Status) int {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.Entry.Name, s.Entry.Tracking, dash(cur), dash(latest), status)
 	}
 	tw.Flush()
-	return n
+	return available, failed
 }
 
 func newUpdateCommand() *cobra.Command {
-	var scope scopeFlags
+	var (
+		scope scopeFlags
+		force bool
+	)
 	cmd := &cobra.Command{
 		Use:   "update [skill...]",
 		Short: "Update tracked skills (all with available updates by default)",
+		Long: `Update tracked skills. Skills whose installed files were edited locally are
+skipped with a warning unless --force is given, which overwrites the edits.
+
+Exits with status 1 if any skill could not be checked or updated.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			a, err := app.New()
 			if err != nil {
@@ -277,34 +298,56 @@ func newUpdateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := cmd.OutOrStdout()
-			updated := 0
-			for _, s := range update.Check(cmd.Context(), a.Sources, in.Lock) {
+			for _, name := range args {
+				if _, ok := in.Lock.Get(name); !ok {
+					return fmt.Errorf("skill %s is not installed in this target", name)
+				}
+			}
+			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+			updated, failed := 0, 0
+			for _, s := range update.Check(cmd.Context(), a.Sources, in) {
 				if len(args) > 0 && !slices.Contains(args, s.Entry.Name) {
 					continue
 				}
 				if s.Err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "%s: %v\n", s.Entry.Name, s.Err)
+					fmt.Fprintf(errOut, "%s: %v\n", s.Entry.Name, s.Err)
+					failed++
 					continue
 				}
 				if !s.Available {
 					continue
 				}
+				if s.Modified && !force {
+					fmt.Fprintf(errOut, "warning: skipping %s: it was modified locally and updating would overwrite your changes (use --force)\n", s.Entry.Name)
+					continue
+				}
 				e, err := update.Apply(in, s)
 				if err != nil {
-					return err
+					fmt.Fprintf(errOut, "%s: %v\n", s.Entry.Name, err)
+					failed++
+					continue
 				}
 				updated++
+				if s.Modified {
+					fmt.Fprintf(errOut, "warning: overwrote local changes to %s\n", e.Name)
+				}
 				fmt.Fprintf(out, "updated %s (%s)\n", e.Name, describeTracking(e))
 			}
-			if updated == 0 {
-				fmt.Fprintln(out, "everything is up to date")
-				return nil
+			if updated > 0 {
+				if err := in.Lock.Save(); err != nil {
+					return err
+				}
+			} else if failed == 0 {
+				fmt.Fprintln(out, "nothing to update")
 			}
-			return in.Lock.Save()
+			if failed > 0 {
+				return ExitError{Code: 1}
+			}
+			return nil
 		},
 	}
 	scope.register(cmd)
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "also update skills with local changes, overwriting them")
 	return cmd
 }
 

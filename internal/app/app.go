@@ -165,12 +165,13 @@ func ProjectRoot(dir string) (string, error) {
 		}
 		dir = wd
 	}
-	if strings.HasPrefix(dir, "~") {
+	// Only "~" and "~/..." refer to the user's home; "~other" is left alone.
+	if dir == "~" || strings.HasPrefix(dir, "~/") || strings.HasPrefix(dir, `~\`) {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		dir = filepath.Join(home, strings.TrimPrefix(dir, "~"))
+		dir = filepath.Join(home, dir[1:])
 	}
 	abs, err := filepath.Abs(dir)
 	if err != nil {

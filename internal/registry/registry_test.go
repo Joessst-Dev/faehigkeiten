@@ -19,7 +19,10 @@ import (
 
 type fakeFetcher map[string]string
 
-func (f fakeFetcher) Fetch(_ context.Context, src, _ string, _ bool) (*source.Checkout, error) {
+func (f fakeFetcher) Fetch(ctx context.Context, src, _ string, _ bool) (*source.Checkout, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	dir, ok := f[src]
 	if !ok {
 		return nil, errors.New("unreachable")
@@ -86,6 +89,14 @@ var _ = Describe("Index", func() {
 		Expect(idx.Entries).To(HaveLen(3))
 		Expect(idx.Errors).To(HaveKey("https://x/down"))
 		Expect(idx.Entries[0].Repo.Name).To(Equal("a"))
+	})
+
+	It("finishes and records errors when cancelled", func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		idx := registry.Build(ctx, f, repos, false, nil)
+		Expect(idx.Entries).To(BeEmpty())
+		Expect(idx.Errors).To(HaveLen(3))
 	})
 
 	It("searches name before description and requires all terms", func() {

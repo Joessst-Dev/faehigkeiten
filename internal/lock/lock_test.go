@@ -74,6 +74,27 @@ var _ = Describe("Lockfile", func() {
 		Expect(err).To(MatchError(ContainSubstring("upgrade")))
 	})
 
+	DescribeTable("rejects entries that escape the skill directories",
+		func(name, path string) {
+			Expect(os.WriteFile(p, []byte("version: 1\nskills:\n  - name: "+name+"\n    path: "+path+"\n"), 0o644)).To(Succeed())
+			_, err := lock.Load(p)
+			Expect(err).To(MatchError(ContainSubstring("invalid")))
+		},
+		Entry("parent name", "'../../victim'", "skills/x"),
+		Entry("nested name", "'a/b'", "skills/x"),
+		Entry("windows separator", `'a\b'`, "skills/x"),
+		Entry("dot dot", "'..'", "skills/x"),
+		Entry("empty name", "''", "skills/x"),
+		Entry("parent path", "x", "'../../home/u/.ssh'"),
+		Entry("absolute path", "x", "/etc"),
+	)
+
+	It("accepts root-level skills", func() {
+		Expect(os.WriteFile(p, []byte("version: 1\nskills:\n  - name: solo\n    path: .\n"), 0o644)).To(Succeed())
+		_, err := lock.Load(p)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
 	DescribeTable("ParseTracking",
 		func(in string, want lock.Tracking, ok bool) {
 			got, err := lock.ParseTracking(in)

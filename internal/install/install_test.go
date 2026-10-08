@@ -65,7 +65,8 @@ var _ = Describe("Installer", func() {
 		Expect(filepath.Join(project, ".agents", "skills", "pdf", "SKILL.md")).To(BeAnExistingFile())
 		Expect(e.Tracking).To(Equal(lock.TrackVersion))
 		Expect(e.Version).To(Equal("1.0.0"))
-		Expect(e.Hash).To(BeEmpty())
+		want, _ := skill.Hash(versioned.Dir)
+		Expect(e.Hash).To(Equal(want), "the installed content is recorded to detect local edits")
 		Expect(e.Agents).To(Equal([]string{"claude-code", "codex"}))
 		Expect(e.Path).To(Equal("skills/pdf"))
 		Expect(e.Commit).To(Equal("abc"))
@@ -173,6 +174,53 @@ var _ = Describe("Installer", func() {
 		}
 	})
 
+	Describe("Modified", func() {
+		It("detects local edits in any agent copy", func() {
+			e, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude, codex}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(in.Modified(e)).To(BeFalse())
+			Expect(os.WriteFile(filepath.Join(project, ".agents", "skills", "pdf", "notes.md"), []byte("mine"), 0o644)).To(Succeed())
+			Expect(in.Modified(e)).To(BeTrue())
+		})
+
+		It("ignores untracked skills and missing copies", func() {
+			e, err := in.Install(install.Request{Skill: plain, Checkout: co, Agents: []agent.Agent{claude}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.Hash).To(BeEmpty())
+			Expect(in.Modified(e)).To(BeFalse())
+
+			e, err = in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(os.RemoveAll(filepath.Join(project, ".claude", "skills", "pdf"))).To(Succeed())
+			Expect(in.Modified(e)).To(BeFalse())
+		})
+	})
+
+	It("uses an explicit directory name and rejects unsafe ones", func() {
+		e, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}, Name: "My PDF"})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(e.Name).To(Equal("My PDF"))
+		Expect(filepath.Join(project, ".claude", "skills", "My PDF", "SKILL.md")).To(BeAnExistingFile())
+		_, err = in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}, Name: "../escape"})
+		Expect(err).To(MatchError(ContainSubstring("invalid skill name")))
+	})
+
+	It("leaves every copy untouched when one of them cannot be written", func() {
+		_, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(os.WriteFile(filepath.Join(project, ".claude", "skills", "pdf", "marker"), []byte("old copy"), 0o644)).To(Succeed())
+		// A file where the codex skills directory should be makes that copy fail.
+		Expect(os.WriteFile(filepath.Join(project, ".agents"), []byte("not a dir"), 0o644)).To(Succeed())
+
+		_, err = in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude, codex}, Force: true})
+		Expect(err).To(HaveOccurred())
+		Expect(filepath.Join(project, ".claude", "skills", "pdf", "marker")).To(BeAnExistingFile(), "first copy was not replaced")
+		e, _ := lf.Get("pdf")
+		Expect(e.Agents).To(Equal([]string{"claude-code"}), "lockfile unchanged")
+		leftovers, _ := filepath.Glob(filepath.Join(project, ".claude", "skills", ".pdf.tmp-*"))
+		Expect(leftovers).To(BeEmpty())
+	})
+
 	Describe("Unmanaged", func() {
 		It("finds skills in agent directories that are not in the lockfile", func() {
 			_, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}})
@@ -247,6 +295,21 @@ var _ = Describe("Installer", func() {
 			Expect(e.Agents).To(Equal([]string{"claude-code"}))
 			Expect(in.Unmanaged()).To(BeEmpty())
 			Expect(filepath.Join(project, ".claude", "skills", "pdf", "scripts", "run.sh")).To(BeAnExistingFile())
+		})
+
+		It("hashes symlinked copies by their content", func() {
+			if filepath.Separator != '/' {
+				Skip("symlinks need privileges on Windows")
+			}
+			real := filepath.Join(project, ".agents", "skills", "pdf")
+			Expect(os.MkdirAll(filepath.Dir(real), 0o755)).To(Succeed())
+			Expect(os.Rename(found.Dirs[0], real)).To(Succeed())
+			Expect(os.Symlink(real, found.Dirs[0])).To(Succeed())
+			e, err := in.Adopt(install.AdoptRequest{Found: found, Checkout: co, Upstream: &versioned, Tracking: lock.TrackHash})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.Commit).To(Equal("abc"), "the linked copy is identical to upstream")
+			want, _ := skill.Hash(versioned.Dir)
+			Expect(e.Hash).To(Equal(want))
 		})
 
 		It("stores the local hash and no commit when the copy differs", func() {

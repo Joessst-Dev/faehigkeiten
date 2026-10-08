@@ -57,8 +57,9 @@ fgk install anthropics/skills pdf docx                    # install into the cur
 fgk install obra/superpowers --all -g -a claude-code,codex # install globally for two agents
 fgk install ./my-skills my-skill --track hash             # hash-track an unversioned skill
 fgk list                                                   # installed skills
-fgk check --exit-code                                      # exit 10 if updates are available (CI)
+fgk check --exit-code                                      # exit 10 if updates are available, 1 on errors (CI)
 fgk update                                                 # apply all available updates
+fgk update --force                                         # …including skills you edited locally
 fgk remove pdf
 fgk adopt golang-cli                                       # manage a skill installed by hand or another tool
 fgk adopt my-skill --from my-org/skills --track hash       # …from an explicit source
@@ -98,6 +99,10 @@ skills:
 | `version` | skill declares `version` (or `metadata.version`) in its frontmatter | semantic version of upstream is newer |
 | `hash`    | opt-in, mainly for skills without a version | SHA-256 over all files (paths + contents) of the upstream skill differs |
 | `none`    | untracked                | never checked |
+
+The lockfile also stores a hash of the installed content of every tracked skill. If you edit an
+installed skill, `check` and the TUI flag it as *locally modified*: `fgk update` skips it with a
+warning unless you pass `--force`, and the TUI shows a warning and does not preselect it.
 
 ### Managing existing skills
 

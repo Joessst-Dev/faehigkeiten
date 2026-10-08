@@ -3,6 +3,7 @@ package skill_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -75,6 +76,21 @@ var _ = Describe("Discover", func() {
 		Expect(skills[2].Dir).To(Equal(filepath.Join(root, "skills", "pdf")))
 	})
 
+	It("ignores symlinked SKILL.md files", func() {
+		if runtime.GOOS == "windows" {
+			Skip("symlinks need privileges on Windows")
+		}
+		secret := filepath.Join(GinkgoT().TempDir(), "secret")
+		Expect(os.WriteFile(secret, []byte("---\nname: leaked\n---\n"), 0o644)).To(Succeed())
+		Expect(os.MkdirAll(filepath.Join(root, "evil"), 0o755)).To(Succeed())
+		Expect(os.Symlink(secret, filepath.Join(root, "evil", "SKILL.md"))).To(Succeed())
+		skills, err := skill.Discover(root)
+		Expect(err).NotTo(HaveOccurred())
+		for _, s := range skills {
+			Expect(s.Name).NotTo(Equal("leaked"))
+		}
+	})
+
 	It("treats a root SKILL.md as a single skill", func() {
 		single := GinkgoT().TempDir()
 		Expect(testutil.WriteFiles(single, map[string]string{"SKILL.md": testutil.SkillMD("solo", "", "")})).To(Succeed())
@@ -116,6 +132,21 @@ var _ = Describe("Hash", func() {
 		Expect(os.Rename(filepath.Join(a, "scripts", "run.sh"), filepath.Join(a, "scripts", "go.sh"))).To(Succeed())
 		after, _ := skill.Hash(a)
 		Expect(after).NotTo(Equal(before))
+	})
+
+	It("follows a symlinked skill directory", func() {
+		if runtime.GOOS == "windows" {
+			Skip("symlinks need privileges on Windows")
+		}
+		link := filepath.Join(GinkgoT().TempDir(), "link")
+		Expect(os.Symlink(a, link)).To(Succeed())
+		want, _ := skill.Hash(a)
+		Expect(skill.Hash(link)).To(Equal(want))
+	})
+
+	It("fails for missing directories", func() {
+		_, err := skill.Hash(filepath.Join(a, "missing"))
+		Expect(err).To(HaveOccurred())
 	})
 
 	It("ignores .git directories", func() {

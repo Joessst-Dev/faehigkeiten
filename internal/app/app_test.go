@@ -28,6 +28,16 @@ var _ = Describe("ProjectRoot", func() {
 		Expect(dir).To(HavePrefix(got))
 	})
 
+	It("expands only the current user's home", func() {
+		home := GinkgoT().TempDir()
+		GinkgoT().Setenv("HOME", home)
+		GinkgoT().Setenv("USERPROFILE", home)
+		Expect(os.Mkdir(filepath.Join(home, "proj"), 0o755)).To(Succeed())
+		Expect(app.ProjectRoot("~/proj")).To(Equal(filepath.Join(home, "proj")))
+		_, err := app.ProjectRoot("~proj")
+		Expect(err).To(HaveOccurred(), "~proj is a relative path that does not exist")
+	})
+
 	It("rejects missing directories and files", func() {
 		_, err := app.ProjectRoot(filepath.Join(GinkgoT().TempDir(), "missing"))
 		Expect(err).To(HaveOccurred())

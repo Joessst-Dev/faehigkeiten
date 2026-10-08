@@ -32,6 +32,11 @@ var _ = Describe("Normalize", func() {
 		Expect(source.IsLocal(got)).To(BeTrue())
 	})
 
+	It("rejects insecure http URLs", func() {
+		_, err := source.Normalize("http://example.com/skills.git")
+		Expect(err).To(MatchError(ContainSubstring("insecure")))
+	})
+
 	It("rejects garbage", func() {
 		_, err := source.Normalize("not a source")
 		Expect(err).To(HaveOccurred())
@@ -104,6 +109,42 @@ var _ = Describe("Manager", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(fresh.Commit).To(Equal(head()))
 			Expect(filepath.Join(fresh.Dir, "skills", "b", "SKILL.md")).To(BeAnExistingFile())
+		})
+
+		It("updates an existing clone in place", func() {
+			co, err := m.Fetch(ctx, url, "", false)
+			Expect(err).NotTo(HaveOccurred())
+			marker := filepath.Join(co.Dir, ".git", "faehigkeiten-marker")
+			Expect(os.WriteFile(marker, nil, 0o644)).To(Succeed())
+
+			wt, _ := repo.Worktree()
+			_, err = wt.Remove("skills/a/SKILL.md")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(testutil.Commit(repo, origin, map[string]string{"skills/c/SKILL.md": "c"}, "replace a with c")).To(Succeed())
+
+			fresh, err := m.Fetch(ctx, url, "", true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(fresh.Dir).To(Equal(co.Dir))
+			Expect(fresh.Commit).To(Equal(head()))
+			Expect(marker).To(BeAnExistingFile(), "the clone was updated, not replaced")
+			Expect(filepath.Join(fresh.Dir, "skills", "c", "SKILL.md")).To(BeAnExistingFile())
+			Expect(filepath.Join(fresh.Dir, "skills", "a")).NotTo(BeAnExistingFile())
+			leftovers, _ := filepath.Glob(filepath.Join(m.CacheDir, "repos", ".*tmp-*"))
+			Expect(leftovers).To(BeEmpty())
+		})
+
+		It("keeps clones of similar URLs apart", func() {
+			parent := GinkgoT().TempDir()
+			_, err := testutil.InitRepo(filepath.Join(parent, "a", "b"), map[string]string{"x/SKILL.md": "one"})
+			Expect(err).NotTo(HaveOccurred())
+			_, err = testutil.InitRepo(filepath.Join(parent, "a_b"), map[string]string{"y/SKILL.md": "two"})
+			Expect(err).NotTo(HaveOccurred())
+			one, err := m.Fetch(ctx, testutil.FileURL(filepath.Join(parent, "a", "b")), "", false)
+			Expect(err).NotTo(HaveOccurred())
+			two, err := m.Fetch(ctx, testutil.FileURL(filepath.Join(parent, "a_b")), "", false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(one.Dir).NotTo(Equal(two.Dir))
+			Expect(filepath.Join(two.Dir, "y", "SKILL.md")).To(BeAnExistingFile())
 		})
 
 		It("checks out a named branch", func() {

@@ -138,7 +138,9 @@ func Discover(root string) ([]Skill, error) {
 			}
 			return nil
 		}
-		if d.Name() != FileName {
+		// A symlinked SKILL.md in an untrusted repository could point anywhere
+		// on disk, and symlinks are not copied on install anyway.
+		if d.Name() != FileName || !d.Type().IsRegular() {
 			return nil
 		}
 		s, err := ParseFile(p)
@@ -169,8 +171,14 @@ func Discover(root string) ([]Skill, error) {
 // Hash returns a deterministic content hash of the skill directory: SHA-256
 // over every file's slash-separated relative path and content, in sorted order.
 func Hash(dir string) (string, error) {
+	// WalkDir does not descend into a symlinked root, and installers commonly
+	// link skill directories, so resolve it first.
+	dir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
 	var files []string
-	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

@@ -172,6 +172,51 @@ var _ = Describe("CLI", func() {
 		})
 	})
 
+	Describe("updating", func() {
+		BeforeEach(func() {
+			code, _, errOut := run("install", origin, "alpha", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", "1.1.0"),
+			}, "bump")).To(Succeed())
+		})
+
+		It("warns about and skips locally modified skills unless forced", func() {
+			local := filepath.Join(project, ".claude", "skills", "alpha", "NOTES.md")
+			Expect(os.WriteFile(local, []byte("my notes"), 0o644)).To(Succeed())
+
+			_, out, _ := run("check", "-p", project)
+			Expect(out).To(ContainSubstring("locally modified, updating overwrites your changes"))
+
+			code, _, errOut := run("update", "-p", project)
+			Expect(code).To(Equal(0))
+			Expect(errOut).To(ContainSubstring("warning: skipping alpha: it was modified locally"))
+			Expect(local).To(BeAnExistingFile())
+
+			code, out, errOut = run("update", "-p", project, "--force")
+			Expect(code).To(Equal(0), errOut)
+			Expect(errOut).To(ContainSubstring("warning: overwrote local changes to alpha"))
+			Expect(out).To(ContainSubstring("updated alpha (version 1.1.0)"))
+			Expect(local).NotTo(BeAnExistingFile())
+		})
+
+		It("exits non-zero when a skill cannot be checked", func() {
+			Expect(os.RemoveAll(origin)).To(Succeed())
+			code, out, _ := run("check", "-p", project, "--exit-code")
+			Expect(code).To(Equal(1))
+			Expect(out).To(ContainSubstring("error:"))
+			code, _, errOut := run("update", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("alpha:"))
+		})
+
+		It("rejects skills that are not installed", func() {
+			code, _, errOut := run("update", "nope", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("skill nope is not installed"))
+		})
+	})
+
 	It("installs globally", func() {
 		code, _, errOut := run("install", origin, "alpha", "-g")
 		Expect(code).To(Equal(0), errOut)
