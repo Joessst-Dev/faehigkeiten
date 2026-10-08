@@ -307,7 +307,8 @@ func (w *wizardScreen) View() string {
 		}
 		b.WriteString("\nPress enter to install.")
 	case stepRunning:
-		b.WriteString(w.spin.View() + " installing …")
+		b.WriteString(w.spin.View())
+		b.WriteString(" installing …")
 	case stepDone:
 		for _, r := range w.res.results {
 			if r.err != nil {
@@ -320,11 +321,13 @@ func (w *wizardScreen) View() string {
 			fmt.Fprintf(&b, "\n%s\n", errStyle.Render("lockfile: "+w.res.saveErr.Error()))
 		}
 		if w.hasConflicts() {
-			b.WriteString("\n" + warnStyle.Render("Some directories already exist. Press f to overwrite them."))
+			b.WriteString("\n")
+			b.WriteString(warnStyle.Render("Some directories already exist. Press f to overwrite them."))
 		}
 	}
 	if w.err != nil {
-		b.WriteString("\n\n" + errStyle.Render(w.err.Error()))
+		b.WriteString("\n\n")
+		b.WriteString(errStyle.Render(w.err.Error()))
 	}
 	return b.String()
 }

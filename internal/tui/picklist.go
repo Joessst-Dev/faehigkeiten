@@ -219,12 +219,15 @@ func (l *pickList) View(width, height int) string {
 		if it.Badge != "" {
 			line += " " + badgeStyle.Render(it.Badge)
 		}
-		b.WriteString(line + "\n")
+		b.WriteString(line)
+		b.WriteString("\n")
 		desc := strings.Join(strings.Fields(it.Desc), " ")
 		if w := width - 6; w > 10 && len([]rune(desc)) > w {
 			desc = string([]rune(desc)[:w-1]) + "…"
 		}
-		b.WriteString("    " + subtleStyle.Render(desc) + "\n")
+		b.WriteString("    ")
+		b.WriteString(subtleStyle.Render(desc))
+		b.WriteString("\n")
 	}
 	if len(l.visible) > rows {
 		b.WriteString(subtleStyle.Render(fmt.Sprintf("  %d/%d", l.cursor+1, len(l.visible))))

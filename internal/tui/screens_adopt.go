@@ -316,20 +316,25 @@ func (s *adoptScreen) key(k tea.KeyMsg) tea.Cmd {
 func (s *adoptScreen) View() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Manage %s with faehigkeiten (files stay as they are)\n", accentStyle.Render(s.found.Name))
-	b.WriteString(subtleStyle.Render(strings.Join(s.found.Dirs, "\n")) + "\n\n")
+	b.WriteString(subtleStyle.Render(strings.Join(s.found.Dirs, "\n")))
+	b.WriteString("\n\n")
 	h := s.env.bodyHeight() - 4 - len(s.found.Dirs)
 	switch s.step {
 	case adoptFinding:
-		b.WriteString(s.spin.View() + " looking for the skill in known repositories (the first search indexes them and can take a minute) …")
+		b.WriteString(s.spin.View())
+		b.WriteString(" looking for the skill in known repositories (the first search indexes them and can take a minute) …")
 	case adoptLoading:
-		b.WriteString(s.spin.View() + " working …")
+		b.WriteString(s.spin.View())
+		b.WriteString(" working …")
 	case adoptSource:
 		b.WriteString("Where does this skill come from?\n\n")
 		b.WriteString(s.list.View(s.env.bodyWidth(), h-2))
 	case adoptOther:
-		b.WriteString(s.inputs[0].View() + "\n" + s.inputs[1].View())
+		b.WriteString(s.inputs[0].View())
+		b.WriteString("\n")
+		b.WriteString(s.inputs[1].View())
 	case adoptPickSkill:
-		b.WriteString("Which skill in " + source.DisplayName(s.co.URL) + " is it?\n\n")
+		fmt.Fprintf(&b, "Which skill in %s is it?\n\n", source.DisplayName(s.co.URL))
 		b.WriteString(s.list.View(s.env.bodyWidth(), h-2))
 	case adoptTracking:
 		note := warnStyle.Render("Your copy differs from upstream; check for updates to get the upstream version.")
@@ -348,7 +353,8 @@ func (s *adoptScreen) View() string {
 		}
 	}
 	if s.err != nil {
-		b.WriteString("\n\n" + errStyle.Render(s.err.Error()))
+		b.WriteString("\n\n")
+		b.WriteString(errStyle.Render(s.err.Error()))
 	}
 	return b.String()
 }
