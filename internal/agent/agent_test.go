@@ -44,14 +44,15 @@ var _ = Describe("Registry", func() {
 	})
 
 	It("applies overrides and adds custom agents", func() {
+		abs := filepath.Join(GinkgoT().TempDir(), "skills")
 		r := agent.NewRegistry(&config.Config{Agents: map[string]config.AgentOverride{
-			"claude-code": {GlobalDir: "/opt/skills"},
+			"claude-code": {GlobalDir: abs},
 			"my-agent":    {Name: "Mine", ProjectDir: ".mine/skills"},
 		}})
 		c, ok := r.Get("claude-code")
 		Expect(ok).To(BeTrue())
-		Expect(c.GlobalDir).To(Equal("/opt/skills"))
-		Expect(c.Dir(agent.ScopeGlobal, "", "/home/u")).To(Equal("/opt/skills"))
+		Expect(c.GlobalDir).To(Equal(abs))
+		Expect(c.Dir(agent.ScopeGlobal, "", "/home/u")).To(Equal(abs))
 		m, ok := r.Get("my-agent")
 		Expect(ok).To(BeTrue())
 		Expect(m.Name).To(Equal("Mine"))
