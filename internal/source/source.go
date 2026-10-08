@@ -123,7 +123,8 @@ func (m *Manager) cachePath(src, ref string) string {
 
 // Fetch makes src available on disk. Plain local directories are used in
 // place. Git sources are shallow-cloned into the cache; an existing clone is
-// reused unless refresh is set, in which case it is replaced by a fresh clone.
+// reused as is, or updated to the latest commit when refresh is set (falling
+// back to a fresh clone if the update fails).
 func (m *Manager) Fetch(ctx context.Context, src, ref string, refresh bool) (*Checkout, error) {
 	src, err := Normalize(src)
 	if err != nil {
@@ -133,6 +134,15 @@ func (m *Manager) Fetch(ctx context.Context, src, ref string, refresh bool) (*Ch
 		return localCheckout(src)
 	}
 	dir := m.cachePath(src, ref)
+	if ref != "" {
+		// Installs record the branch they got (e.g. "main") even when they
+		// fetched the default branch; reuse that clone instead of cloning the
+		// same branch a second time under its name.
+		def := m.cachePath(src, "")
+		if co, err := openCheckout(src, def); err == nil && co.Ref == ref {
+			dir = def
+		}
+	}
 	defer m.lock(dir)()
 
 	if co, err := openCheckout(src, dir); err == nil {

@@ -149,9 +149,27 @@ var _ = Describe("Manager", func() {
 
 		It("checks out a named branch", func() {
 			Expect(os.WriteFile(filepath.Join(origin, ".git", "refs", "heads", "dev"), []byte(head()+"\n"), 0o644)).To(Succeed())
+			def, err := m.Fetch(ctx, url, "", false)
+			Expect(err).NotTo(HaveOccurred())
 			co, err := m.Fetch(ctx, url, "dev", false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(co.Ref).To(Equal("dev"))
+			Expect(co.Dir).NotTo(Equal(def.Dir), "another branch needs its own clone")
+		})
+
+		It("reuses the default-branch clone when its branch is requested by name", func() {
+			def, err := m.Fetch(ctx, url, "", false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(def.Ref).To(Equal("master"))
+
+			Expect(testutil.Commit(repo, origin, map[string]string{"skills/b/SKILL.md": "b"}, "add b")).To(Succeed())
+			named, err := m.Fetch(ctx, url, "master", true)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(named.Dir).To(Equal(def.Dir))
+			Expect(named.Commit).To(Equal(head()))
+
+			clones, _ := os.ReadDir(filepath.Join(m.CacheDir, "repos"))
+			Expect(clones).To(HaveLen(1), "only one clone of the repository exists")
 		})
 
 		It("reports unknown refs", func() {
