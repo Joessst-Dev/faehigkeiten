@@ -292,10 +292,10 @@ func (w *wizardScreen) View() string {
 		b.WriteString(subtleStyle.Render("choose a target …"))
 	case stepAgents:
 		b.WriteString("Which agents should get the skill?\n\n")
-		b.WriteString(w.agents.View(w.env.width, h-2))
+		b.WriteString(w.agents.View(w.env.bodyWidth(), h-2))
 	case stepTracking:
 		b.WriteString("How should updates be tracked?\n\n")
-		b.WriteString(w.track.View(w.env.width, h-2))
+		b.WriteString(w.track.View(w.env.bodyWidth(), h-2))
 	case stepConfirm:
 		var agents []string
 		for _, a := range w.chosenAgents() {
@@ -470,12 +470,13 @@ func (s *installedScreen) View() string {
 	if s.err != nil {
 		return errStyle.Render(s.err.Error())
 	}
-	v := subtleStyle.Render("lockfile: "+s.in.Lock.Path()) + "\n\n" + s.list.View(s.env.width, s.env.bodyHeight()-4)
+	v := subtleStyle.Render("lockfile: "+s.in.Lock.Path()) + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4)
 	switch c := s.confirm.(type) {
 	case lock.Entry:
 		v += "\n" + warnStyle.Render("Remove "+c.Name+" from all agents? (y/n)")
 	case install.Found:
-		v += "\n" + warnStyle.Render("Delete "+strings.Join(c.Dirs, ", ")+"? It was not installed by faehigkeiten. (y/n)")
+		v += "\n" + warnStyle.Render("Delete "+c.Name+"? It was not installed by faehigkeiten. (y/n)") +
+			"\n" + subtleStyle.Render(strings.Join(c.Dirs, "\n"))
 	default:
 		if s.msg != "" {
 			v += "\n" + okStyle.Render(s.msg)
@@ -636,7 +637,7 @@ func (s *updatesScreen) View() string {
 	if s.err != nil {
 		return errStyle.Render(s.err.Error())
 	}
-	v := subtleStyle.Render("Untracked skills are not checked.") + "\n\n" + s.list.View(s.env.width, s.env.bodyHeight()-4)
+	v := subtleStyle.Render("Untracked skills are not checked.") + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4)
 	if s.msg != "" {
 		v += "\n" + okStyle.Render(s.msg)
 	}

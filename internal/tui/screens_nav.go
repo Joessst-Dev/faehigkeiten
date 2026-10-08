@@ -91,7 +91,7 @@ func (s *menuScreen) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (s *menuScreen) View() string { return s.list.View(s.env.width, s.env.bodyHeight()) }
+func (s *menuScreen) View() string { return s.list.View(s.env.bodyWidth(), s.env.bodyHeight()) }
 
 // ---- target ----
 
@@ -190,7 +190,7 @@ func (s *targetScreen) Update(msg tea.Msg) tea.Cmd {
 
 func (s *targetScreen) View() string {
 	if !s.askPath {
-		return "Where should skills be installed?\n\n" + s.list.View(s.env.width, s.env.bodyHeight()-2)
+		return "Where should skills be installed?\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-2)
 	}
 	v := s.path.View()
 	if s.err != nil {
@@ -289,7 +289,7 @@ func (s *reposScreen) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (s *reposScreen) View() string {
-	v := s.list.View(s.env.width, s.env.bodyHeight()-1)
+	v := s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-1)
 	if s.msg != "" {
 		v += "\n" + warnStyle.Render(s.msg)
 	}

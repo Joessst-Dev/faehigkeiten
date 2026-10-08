@@ -3,7 +3,6 @@ package tui
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -135,8 +134,11 @@ var (
 	warnColor = lipgloss.AdaptiveColor{Light: "#B26A00", Dark: "#FFC66D"}
 	errColor  = lipgloss.AdaptiveColor{Light: "#C62828", Dark: "#FF8A80"}
 
+	barBg       = lipgloss.AdaptiveColor{Light: "#ECE8F8", Dark: "#2B2640"}
+	barStyle    = lipgloss.NewStyle().Background(barBg).Foreground(subtle)
+	footerStyle = lipgloss.NewStyle().Background(barBg).Foreground(subtle).Padding(0, 1)
 	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(accent).Padding(0, 1)
-	crumbStyle  = lipgloss.NewStyle().Foreground(subtle)
+	crumbStyle  = lipgloss.NewStyle().Background(barBg).Foreground(subtle)
 	helpStyle   = lipgloss.NewStyle().Foreground(subtle)
 	subtleStyle = lipgloss.NewStyle().Foreground(subtle)
 	accentStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
@@ -145,31 +147,52 @@ var (
 	errStyle    = lipgloss.NewStyle().Foreground(errColor)
 )
 
-// View implements tea.Model.
+// Layout: title bar, target line, blank, body, blank, help bar.
+const chromeLines = 5
+
+// View implements tea.Model. It always fills the whole terminal: the body is
+// padded or clipped to the space between the title bar and the help bar.
 func (m *Model) View() string {
+	w := m.env.width
 	var crumbs []string
 	for _, s := range m.stack[1:] {
 		crumbs = append(crumbs, s.Title())
 	}
-	header := titleStyle.Render("faehigkeiten") + " " + crumbStyle.Render(strings.Join(crumbs, " › "))
-	target := subtleStyle.Render("target: " + describeTarget(m.env.target))
+	left := titleStyle.Render("faehigkeiten") + " " + crumbStyle.Render(strings.Join(crumbs, " › "))
+	right := barStyle.Render(m.env.version + " ")
+	gap := max(0, w-lipgloss.Width(left)-lipgloss.Width(right))
+	header := barStyle.MaxWidth(w).Render(left + barStyle.Render(strings.Repeat(" ", gap)) + right)
+
+	target := subtleStyle.MaxWidth(w).Render(" target: " + describeTarget(m.env.target))
+
 	help := "ctrl+c quit"
 	if len(m.stack) > 1 {
 		help = "esc back • " + help
 	}
-	if h := m.top().Help(); h != "" {
-		help = h + " • " + help
+	if hl := m.top().Help(); strings.HasSuffix(hl, " quit") {
+		help = hl // the screen already explains how to quit
+	} else if hl != "" {
+		help = hl + " • " + help
 	}
-	return fmt.Sprintf("%s\n%s\n\n%s\n\n%s", header, target, m.top().View(), helpStyle.Render(help))
+	footer := footerStyle.Width(w).MaxWidth(w).MaxHeight(1).Render(help)
+
+	body := lipgloss.NewStyle().
+		Padding(0, 1).
+		Width(w).MaxWidth(w).
+		Height(m.env.bodyHeight()).MaxHeight(m.env.bodyHeight()).
+		Render(m.top().View())
+
+	return lipgloss.JoinVertical(lipgloss.Left, header, target, "", body, "", footer)
 }
 
 // bodyHeight is the number of lines available to a screen's content.
 func (e *env) bodyHeight() int {
-	h := e.height - 7
-	if h < 5 {
-		return 5
-	}
-	return h
+	return max(3, e.height-chromeLines)
+}
+
+// bodyWidth is the number of columns available to a screen's content.
+func (e *env) bodyWidth() int {
+	return max(20, e.width-2)
 }
 
 func describeTarget(t install.Target) string {

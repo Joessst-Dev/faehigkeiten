@@ -325,19 +325,19 @@ func (s *adoptScreen) View() string {
 		b.WriteString(s.spin.View() + " working …")
 	case adoptSource:
 		b.WriteString("Where does this skill come from?\n\n")
-		b.WriteString(s.list.View(s.env.width, h-2))
+		b.WriteString(s.list.View(s.env.bodyWidth(), h-2))
 	case adoptOther:
 		b.WriteString(s.inputs[0].View() + "\n" + s.inputs[1].View())
 	case adoptPickSkill:
 		b.WriteString("Which skill in " + source.DisplayName(s.co.URL) + " is it?\n\n")
-		b.WriteString(s.list.View(s.env.width, h-2))
+		b.WriteString(s.list.View(s.env.bodyWidth(), h-2))
 	case adoptTracking:
 		note := warnStyle.Render("Your copy differs from upstream; check for updates to get the upstream version.")
 		if s.ident {
 			note = okStyle.Render("Your copy is identical to upstream.")
 		}
 		fmt.Fprintf(&b, "Source: %s (%s)\n%s\n\nHow should updates be tracked?\n\n", source.DisplayName(s.co.URL), s.up.Path, note)
-		b.WriteString(s.list.View(s.env.width, h-5))
+		b.WriteString(s.list.View(s.env.bodyWidth(), h-5))
 	case adoptDone:
 		if s.err == nil {
 			if s.result.Source == "" {

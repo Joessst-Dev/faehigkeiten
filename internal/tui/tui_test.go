@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/go-git/go-git/v5"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -303,6 +304,24 @@ var _ = Describe("TUI", func() {
 		Expect(v).To(ContainSubstring("beta"))
 		Expect(strings.Count(v, "alpha")).To(BeZero())
 	})
+
+	DescribeTable("fills the whole terminal",
+		func(width, height int, footer string, keys ...string) {
+			d.send(tea.WindowSizeMsg{Width: width, Height: height})
+			d.keys(keys...)
+			lines := strings.Split(d.view(), "\n")
+			Expect(lines).To(HaveLen(height))
+			for _, l := range lines {
+				Expect(lipgloss.Width(l)).To(BeNumerically("<=", width), l)
+			}
+			Expect(lipgloss.Width(lines[0])).To(Equal(width), "title bar spans the width")
+			Expect(lines[height-1]).To(ContainSubstring(footer), "help bar is pinned to the bottom")
+		},
+		Entry("menu, large terminal", 140, 50, "enter select • q quit"),
+		Entry("menu, small terminal", 60, 15, "q quit"),
+		Entry("long repository list is clipped", 80, 20, "enter open", "enter"),
+		Entry("tiny terminal", 30, 8, "enter open", "enter"),
+	)
 
 	It("quits from the menu", func() {
 		d.keys("q")

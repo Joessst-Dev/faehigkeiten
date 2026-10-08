@@ -139,7 +139,7 @@ func (s *skillsScreen) View() string {
 		return errStyle.Render("Could not load repository: "+s.err.Error()) + "\n\n" + subtleStyle.Render("press r to retry")
 	}
 	head := subtleStyle.Render(fmt.Sprintf("%s @ %s • %d skills", s.co.URL, shortCommit(s.co), len(s.list.items)))
-	return head + "\n\n" + s.list.View(s.env.width, s.env.bodyHeight()-2)
+	return head + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-2)
 }
 
 func shortCommit(co *source.Checkout) string {
@@ -337,5 +337,5 @@ func (s *searchScreen) View() string {
 	if s.idx != nil && !s.remote && len(s.idx.Errors) > 0 {
 		v += warnStyle.Render(fmt.Sprintf("%d repositories could not be indexed", len(s.idx.Errors))) + "\n"
 	}
-	return v + s.list.View(s.env.width, s.env.bodyHeight()-5)
+	return v + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-5)
 }
