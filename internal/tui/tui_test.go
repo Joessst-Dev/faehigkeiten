@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/Joessst-Dev/faehigkeiten/internal/config"
 	"github.com/Joessst-Dev/faehigkeiten/internal/install"
 	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
+	"github.com/Joessst-Dev/faehigkeiten/internal/registry"
 	"github.com/Joessst-Dev/faehigkeiten/internal/testutil"
 )
 
@@ -230,6 +232,62 @@ var _ = Describe("TUI", func() {
 		d.keys("d", "y")
 		Expect(d.view()).To(ContainSubstring("removed handmade"))
 		Expect(filepath.Join(project, ".claude", "skills", "handmade")).NotTo(BeAnExistingFile())
+	})
+
+	Describe("managing unmanaged skills", func() {
+		BeforeEach(func() {
+			Expect(testutil.SeedIndex(os.Getenv(config.EnvCacheDir), registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned skill", "1.0.0"),
+				".claude/skills/beta/SKILL.md":  testutil.SkillMD("beta", "changed by hand", ""),
+			})).To(Succeed())
+			d.keys("down", "down", "down", "enter") // Installed skills
+			Expect(d.view()).To(ContainSubstring("m manage"))
+		})
+
+		It("adopts from an identical source found in the known repositories", func() {
+			d.keys("m")
+			v := d.view()
+			Expect(v).To(ContainSubstring("Where does this skill come from?"))
+			Expect(v).To(ContainSubstring("fixture/skills"))
+			Expect(v).To(ContainSubstring("identical"))
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("Your copy is identical to upstream"))
+			d.keys("enter") // Track version
+			Expect(d.view()).To(ContainSubstring("alpha is now managed from origin (Track version)"))
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("v1.0.0"))
+
+			e, ok := lockfile().Get("alpha")
+			Expect(ok).To(BeTrue())
+			Expect(e.Path).To(Equal("skills/alpha"))
+			Expect(e.Version).To(Equal("1.0.0"))
+		})
+
+		It("adopts from a repository entered by hand and keeps local changes", func() {
+			d.keys("down", "m") // beta
+			Expect(d.view()).To(ContainSubstring("differs from local copy"))
+			d.keys("down", "enter") // Other repository…
+			d.keys(origin, "enter")
+			Expect(d.view()).To(ContainSubstring("Which skill in origin is it?"))
+			d.keys("enter") // cursor is on beta
+			Expect(d.view()).To(ContainSubstring("Your copy differs from upstream"))
+			d.keys("enter") // Track content hash
+			Expect(d.view()).To(ContainSubstring("beta is now managed"))
+
+			e, _ := lockfile().Get("beta")
+			Expect(e.Tracking).To(Equal(lock.TrackHash))
+			data, err := os.ReadFile(filepath.Join(project, ".claude", "skills", "beta", "SKILL.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(ContainSubstring("changed by hand"))
+		})
+
+		It("keeps a skill local only", func() {
+			d.keys("m", "down", "down", "enter")
+			Expect(d.view()).To(ContainSubstring("alpha is now managed (local only)"))
+			e, _ := lockfile().Get("alpha")
+			Expect(e.Source).To(BeEmpty())
+		})
 	})
 
 	It("cancels the wizard when the target picker is closed", func() {

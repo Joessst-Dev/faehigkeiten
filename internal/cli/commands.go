@@ -496,3 +496,121 @@ func newAgentsCommand() *cobra.Command {
 		},
 	}
 }
+
+func newAdoptCommand() *cobra.Command {
+	var (
+		scope     scopeFlags
+		from, ref string
+		skillPath string
+		track     string
+		local     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "adopt <skill...>",
+		Short: "Manage skills that were not installed by faehigkeiten",
+		Long: `Record skills found in agent directories (shown as "not managed" by
+"faehigkeiten list") in the lockfile, so they can be tracked for updates.
+The files are left untouched.
+
+Without --from, the known repositories are searched for a skill with the same
+name; a source with identical content is preferred. Use --local to manage a
+skill without a source (no update tracking).`,
+		Example: `  faehigkeiten adopt pdf
+  faehigkeiten adopt golang-cli --from samber/cc-skills-golang --track version
+  faehigkeiten adopt my-notes --local`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if local && (from != "" || track != "") {
+				return fmt.Errorf("--local cannot be combined with --from or --track")
+			}
+			if skillPath != "" && len(args) > 1 {
+				return fmt.Errorf("--path can only be used with a single skill")
+			}
+			a, err := app.New()
+			if err != nil {
+				return err
+			}
+			var tracking lock.Tracking
+			if track != "" {
+				if tracking, err = lock.ParseTracking(track); err != nil {
+					return err
+				}
+			}
+			t, err := scope.target(a)
+			if err != nil {
+				return err
+			}
+			in, err := a.Installer(t)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			for _, name := range args {
+				f, err := app.FindUnmanaged(in, name)
+				if err != nil {
+					return err
+				}
+				req := install.AdoptRequest{Found: f, Tracking: tracking}
+				if !local {
+					src, r, p := from, ref, skillPath
+					if src == "" {
+						c, err := pickCandidate(cmd, a, f)
+						if err != nil {
+							return err
+						}
+						src, p = c.Entry.Repo.URL, c.Entry.Path
+						if r == "" {
+							r = c.Entry.Repo.Ref
+						}
+					}
+					co, up, err := a.Upstream(cmd.Context(), src, r, p, f.Name)
+					if err != nil {
+						return err
+					}
+					req.Checkout, req.Upstream = co, up
+					if req.Tracking == lock.TrackVersion && !up.HasVersion() {
+						req.Tracking = lock.TrackHash
+						fmt.Fprintf(cmd.ErrOrStderr(), "%s has no upstream version, using hash tracking\n", name)
+					}
+				}
+				e, err := in.Adopt(req)
+				if err != nil {
+					return err
+				}
+				if e.Source == "" {
+					fmt.Fprintf(out, "adopted %s (local only, untracked)\n", e.Name)
+				} else {
+					fmt.Fprintf(out, "adopted %s from %s (%s)\n", e.Name, source.DisplayName(e.Source), describeTracking(e))
+				}
+			}
+			return in.Lock.Save()
+		},
+	}
+	scope.register(cmd)
+	cmd.Flags().StringVar(&from, "from", "", "source repository (owner/repo, git URL or local directory)")
+	cmd.Flags().StringVar(&ref, "ref", "", "branch or tag of the source")
+	cmd.Flags().StringVar(&skillPath, "path", "", "path of the skill inside the source (default: found by name)")
+	cmd.Flags().StringVarP(&track, "track", "t", "", "tracking mode: version, hash or none (default: version if upstream is versioned)")
+	cmd.Flags().BoolVar(&local, "local", false, "manage without a source; no update tracking")
+	return cmd
+}
+
+// pickCandidate chooses a source automatically: an identical copy, or the
+// only skill with that name. Anything else is ambiguous.
+func pickCandidate(cmd *cobra.Command, a *app.App, f install.Found) (app.Candidate, error) {
+	cands, err := a.Candidates(cmd.Context(), f)
+	if err != nil {
+		return app.Candidate{}, err
+	}
+	switch {
+	case len(cands) == 0:
+		return app.Candidate{}, fmt.Errorf("no known repository contains a skill named %s; use --from <source> or --local", f.Name)
+	case cands[0].Identical, len(cands) == 1:
+		return cands[0], nil
+	}
+	var b strings.Builder
+	for _, c := range cands {
+		fmt.Fprintf(&b, "\n  --from %s --path %s", c.Entry.Repo.URL, c.Entry.Path)
+	}
+	return app.Candidate{}, fmt.Errorf("several repositories contain %s and none matches the local copy exactly; choose one:%s", f.Name, b.String())
+}

@@ -222,4 +222,71 @@ var _ = Describe("Installer", func() {
 			Expect(in.Unmanaged()).To(BeEmpty())
 		})
 	})
+
+	Describe("Adopt", func() {
+		var found install.Found
+
+		BeforeEach(func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/pdf/SKILL.md":       testutil.SkillMD("pdf", "PDF", "1.0.0"),
+				".claude/skills/pdf/scripts/run.sh": "echo",
+			})).To(Succeed())
+			fs := in.Unmanaged()
+			Expect(fs).To(HaveLen(1))
+			found = fs[0]
+		})
+
+		It("records an identical copy with its commit and keeps the files", func() {
+			e, err := in.Adopt(install.AdoptRequest{Found: found, Checkout: co, Upstream: &versioned})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.Source).To(Equal(co.URL))
+			Expect(e.Path).To(Equal("skills/pdf"))
+			Expect(e.Commit).To(Equal("abc"))
+			Expect(e.Tracking).To(Equal(lock.TrackVersion))
+			Expect(e.Version).To(Equal("1.0.0"))
+			Expect(e.Agents).To(Equal([]string{"claude-code"}))
+			Expect(in.Unmanaged()).To(BeEmpty())
+			Expect(filepath.Join(project, ".claude", "skills", "pdf", "scripts", "run.sh")).To(BeAnExistingFile())
+		})
+
+		It("stores the local hash and no commit when the copy differs", func() {
+			Expect(os.WriteFile(filepath.Join(found.Dirs[0], "scripts", "run.sh"), []byte("local change"), 0o644)).To(Succeed())
+			e, err := in.Adopt(install.AdoptRequest{Found: found, Checkout: co, Upstream: &versioned, Tracking: lock.TrackHash})
+			Expect(err).NotTo(HaveOccurred())
+			local, _ := skill.Hash(found.Dirs[0])
+			Expect(e.Hash).To(Equal(local))
+			Expect(e.Commit).To(BeEmpty())
+		})
+
+		It("uses 0.0.0 when the local copy has no version", func() {
+			Expect(os.WriteFile(filepath.Join(found.Dirs[0], "SKILL.md"), []byte(testutil.SkillMD("pdf", "", "")), 0o644)).To(Succeed())
+			found = in.Unmanaged()[0]
+			e, err := in.Adopt(install.AdoptRequest{Found: found, Checkout: co, Upstream: &versioned, Tracking: lock.TrackVersion})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.Version).To(Equal("0.0.0"))
+		})
+
+		It("rejects version tracking when upstream has no version", func() {
+			_, err := in.Adopt(install.AdoptRequest{Found: found, Checkout: co, Upstream: &plain, Tracking: lock.TrackVersion})
+			Expect(err).To(MatchError(ContainSubstring("no version")))
+		})
+
+		It("adopts local-only skills without tracking", func() {
+			e, err := in.Adopt(install.AdoptRequest{Found: found})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.Source).To(BeEmpty())
+			Expect(e.Tracking).To(Equal(lock.TrackNone))
+			_, err = in.Adopt(install.AdoptRequest{Found: found})
+			Expect(err).To(MatchError(install.ErrConflict))
+
+			By("allowing a later install from any source to take over")
+			_, err = in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}})
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("refuses tracking for local-only skills", func() {
+			_, err := in.Adopt(install.AdoptRequest{Found: found, Tracking: lock.TrackHash})
+			Expect(err).To(HaveOccurred())
+		})
+	})
 })

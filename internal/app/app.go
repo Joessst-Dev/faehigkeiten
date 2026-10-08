@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/agent"
@@ -191,4 +193,88 @@ func ProjectRoot(dir string) (string, error) {
 		}
 		d = parent
 	}
+}
+
+// Candidate is a possible upstream source for an unmanaged skill.
+type Candidate struct {
+	Entry registry.Entry
+	// Identical reports whether the upstream content equals the local copy.
+	Identical bool
+}
+
+// Candidates looks up skills with the same name as f in the known
+// repositories. Identical copies come first, then repositories in registry
+// order (user repositories, then by popularity).
+func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, error) {
+	idx, err := a.Index(ctx, false, nil)
+	if err != nil {
+		return nil, err
+	}
+	local, err := skill.Hash(f.Dirs[0])
+	if err != nil {
+		return nil, err
+	}
+	order := map[string]int{}
+	for i, r := range a.Repos() {
+		order[r.URL] = i
+	}
+	var out []Candidate
+	for _, e := range idx.Entries {
+		if install.DirName(e.Name) != f.Name && path.Base(e.Path) != f.Name {
+			continue
+		}
+		c := Candidate{Entry: e}
+		if co, err := a.Sources.Fetch(ctx, e.Repo.URL, e.Repo.Ref, false); err == nil {
+			if h, err := skill.Hash(filepath.Join(co.Dir, filepath.FromSlash(e.Path))); err == nil {
+				c.Identical = h == local
+			}
+		}
+		out = append(out, c)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Identical != out[j].Identical {
+			return out[i].Identical
+		}
+		return order[out[i].Entry.Repo.URL] < order[out[j].Entry.Repo.URL]
+	})
+	return out, nil
+}
+
+// Upstream fetches src and returns the skill at skillPath, or the skill named
+// name when skillPath is empty.
+func (a *App) Upstream(ctx context.Context, src, ref, skillPath, name string) (*source.Checkout, *skill.Skill, error) {
+	co, skills, err := a.Load(ctx, src, ref, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, s := range skills {
+		if skillPath != "" && s.Path == strings.Trim(skillPath, "/") {
+			return co, &s, nil
+		}
+	}
+	if skillPath == "" {
+		for _, s := range skills {
+			if install.DirName(s.Name) == name || path.Base(s.Path) == name {
+				return co, &s, nil
+			}
+		}
+	}
+	want := skillPath
+	if want == "" {
+		want = name
+	}
+	return nil, nil, fmt.Errorf("skill %q not found in %s", want, source.DisplayName(co.URL))
+}
+
+// FindUnmanaged returns the unmanaged skill with the given name.
+func FindUnmanaged(in *install.Installer, name string) (install.Found, error) {
+	for _, f := range in.Unmanaged() {
+		if f.Name == name {
+			return f, nil
+		}
+	}
+	if _, ok := in.Lock.Get(name); ok {
+		return install.Found{}, fmt.Errorf("%s is already managed", name)
+	}
+	return install.Found{}, fmt.Errorf("no unmanaged skill named %q in this target", name)
 }

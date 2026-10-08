@@ -42,7 +42,7 @@ func Check(ctx context.Context, f Fetcher, lf *lock.File) []Status {
 
 	var out []Status
 	for _, e := range lf.Skills {
-		if e.Tracking == lock.TrackNone || e.Tracking == "" {
+		if e.Tracking == lock.TrackNone || e.Tracking == "" || e.Source == "" {
 			continue
 		}
 		st := Status{Entry: e}

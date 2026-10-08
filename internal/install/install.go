@@ -112,7 +112,8 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 	}
 
 	prev, managed := in.Lock.Get(name)
-	if managed && prev.Source != req.Checkout.URL && !req.Force {
+	// Local-only entries (adopted without a source) may be replaced by any source.
+	if managed && prev.Source != "" && prev.Source != req.Checkout.URL && !req.Force {
 		return lock.Entry{}, fmt.Errorf("%w: %s is installed from %s", ErrConflict, name, prev.Source)
 	}
 	var prevDirs []string
@@ -346,4 +347,75 @@ func RemoveFound(f Found) error {
 		}
 	}
 	return nil
+}
+
+// AdoptRequest turns an unmanaged skill into a managed one without touching
+// its files.
+type AdoptRequest struct {
+	Found Found
+	// Checkout and Upstream identify the source to track. Both nil adopts the
+	// skill as local-only, which records it without update tracking.
+	Checkout *source.Checkout
+	Upstream *skill.Skill
+	Tracking lock.Tracking
+}
+
+// Adopt records an unmanaged skill in the lockfile. The installed files are
+// kept as they are; the recorded version or hash describes the local copy, so
+// an update check reports a difference to upstream right away. The lockfile
+// is not saved.
+func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
+	f := req.Found
+	if len(f.Dirs) == 0 {
+		return lock.Entry{}, fmt.Errorf("skill %s has no directories", f.Name)
+	}
+	if _, ok := in.Lock.Get(f.Name); ok {
+		return lock.Entry{}, fmt.Errorf("%w: %s is already managed", ErrConflict, f.Name)
+	}
+	entry := lock.Entry{Name: f.Name, Agents: f.Agents, Tracking: lock.TrackNone, InstalledAt: in.now()}
+	if req.Checkout == nil || req.Upstream == nil {
+		if req.Tracking != "" && req.Tracking != lock.TrackNone {
+			return lock.Entry{}, fmt.Errorf("local-only skill %s cannot be tracked for updates", f.Name)
+		}
+		in.Lock.Upsert(entry)
+		return entry, nil
+	}
+
+	local, err := skill.Hash(f.Dirs[0])
+	if err != nil {
+		return lock.Entry{}, err
+	}
+	upstream, err := skill.Hash(req.Upstream.Dir)
+	if err != nil {
+		return lock.Entry{}, err
+	}
+	entry.Source = req.Checkout.URL
+	entry.Path = req.Upstream.Path
+	entry.Ref = req.Checkout.Ref
+	if local == upstream {
+		// Only claim a commit when the local copy matches it exactly.
+		entry.Commit = req.Checkout.Commit
+	}
+	entry.Tracking = req.Tracking
+	if entry.Tracking == "" {
+		entry.Tracking = DefaultTracking(*req.Upstream)
+	}
+	switch entry.Tracking {
+	case lock.TrackVersion:
+		if !req.Upstream.HasVersion() {
+			return lock.Entry{}, fmt.Errorf("upstream skill %s has no version; use hash tracking instead", req.Upstream.Name)
+		}
+		entry.Version = f.Version
+		if entry.Version == "" {
+			// Unknown local version: any upstream version counts as an update.
+			entry.Version = "0.0.0"
+		}
+	case lock.TrackHash:
+		entry.Hash = local
+	case lock.TrackNone:
+	default:
+		return lock.Entry{}, fmt.Errorf("invalid tracking mode %q", entry.Tracking)
+	}
+	in.Lock.Upsert(entry)
+	return entry, nil
 }

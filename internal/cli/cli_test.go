@@ -13,6 +13,7 @@ import (
 	"github.com/Joessst-Dev/faehigkeiten/internal/cli"
 	"github.com/Joessst-Dev/faehigkeiten/internal/config"
 	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
+	"github.com/Joessst-Dev/faehigkeiten/internal/registry"
 	"github.com/Joessst-Dev/faehigkeiten/internal/testutil"
 )
 
@@ -116,6 +117,59 @@ var _ = Describe("CLI", func() {
 		code, out, _ := run("list", "-p", project)
 		Expect(code).To(Equal(0))
 		Expect(out).To(MatchRegexp(`handmade\s+not managed\s+claude-code`))
+	})
+
+	Describe("adopt", func() {
+		BeforeEach(func() {
+			Expect(testutil.SeedIndex(filepath.Join(filepath.Dir(cfgDir), "cache"),
+				registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
+		})
+
+		It("finds an identical source automatically and stops listing it as unmanaged", func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", "1.0.0"),
+			})).To(Succeed())
+			code, out, errOut := run("adopt", "alpha", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("adopted alpha from origin (version 1.0.0)"))
+			_, out, _ = run("list", "-p", project)
+			Expect(out).To(MatchRegexp(`alpha\s+version 1.0.0`))
+			Expect(out).NotTo(ContainSubstring("not managed"))
+			code, _, _ = run("check", "-p", project, "--exit-code")
+			Expect(code).To(Equal(0))
+		})
+
+		It("reports an update when the adopted copy differs from upstream", func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/beta/SKILL.md": testutil.SkillMD("beta", "edited locally", ""),
+			})).To(Succeed())
+			code, out, errOut := run("adopt", "beta", "-p", project, "--from", origin, "-t", "version")
+			Expect(code).To(Equal(0), errOut)
+			Expect(errOut).To(ContainSubstring("using hash tracking"))
+			Expect(out).To(ContainSubstring("(hash "))
+			code, _, _ = run("check", "-p", project, "--exit-code")
+			Expect(code).To(Equal(10))
+			code, _, _ = run("update", "-p", project)
+			Expect(code).To(Equal(0))
+			data, err := os.ReadFile(filepath.Join(project, ".claude", "skills", "beta", "SKILL.md"))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(string(data)).To(ContainSubstring("Unversioned"))
+		})
+
+		It("adopts local-only skills and explains unknown ones", func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/mine/SKILL.md": testutil.SkillMD("mine", "", ""),
+			})).To(Succeed())
+			code, _, errOut := run("adopt", "mine", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("--local"))
+			code, out, _ := run("adopt", "mine", "-p", project, "--local")
+			Expect(code).To(Equal(0))
+			Expect(out).To(ContainSubstring("local only"))
+			code, _, errOut = run("adopt", "nope", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring(`no unmanaged skill named "nope"`))
+		})
 	})
 
 	It("installs globally", func() {

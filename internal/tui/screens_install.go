@@ -354,6 +354,11 @@ func (s *installedScreen) Help() string {
 	if s.confirm != nil {
 		return "y confirm • n cancel"
 	}
+	if it, ok := s.list.Current(); ok {
+		if _, unmanaged := it.Value.(install.Found); unmanaged {
+			return "m manage • d remove • u check updates • t change target • / filter"
+		}
+	}
 	return "d remove • u check updates • t change target • / filter"
 }
 
@@ -446,6 +451,12 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 	case "d":
 		if it, ok := s.list.Current(); ok {
 			s.confirm = it.Value
+		}
+	case "m":
+		if it, ok := s.list.Current(); ok {
+			if f, ok := it.Value.(install.Found); ok {
+				return push(newAdoptScreen(s.env, s.in, f))
+			}
 		}
 	case "u":
 		return push(newUpdatesScreen(s.env))

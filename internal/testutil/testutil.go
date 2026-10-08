@@ -2,6 +2,7 @@
 package testutil
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,9 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+
+	"github.com/Joessst-Dev/faehigkeiten/internal/registry"
+	"github.com/Joessst-Dev/faehigkeiten/internal/source"
 )
 
 // WriteFiles creates every file in files (slash-separated relative path → content) below root.
@@ -68,4 +72,11 @@ func Commit(repo *git.Repository, dir string, files map[string]string, msg strin
 		Author: &object.Signature{Name: "test", Email: "test@example.com", When: time.Now()},
 	})
 	return err
+}
+
+// SeedIndex builds the skill index for repos (typically local directories)
+// and stores it in cacheDir, so lookups never reach the builtin repositories.
+func SeedIndex(cacheDir string, repos ...registry.Repo) error {
+	idx := registry.Build(context.Background(), source.NewManager(cacheDir), repos, false, nil)
+	return idx.Save(registry.IndexPath(cacheDir))
 }

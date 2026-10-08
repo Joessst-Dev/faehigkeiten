@@ -41,7 +41,7 @@ Run `faehigkeiten` (or `fgk`) without arguments to start the TUI:
 - **Browse repositories**: pick a repository, select skills with <kbd>space</kbd>, press <kbd>enter</kbd>
 - **Search skills**: type to search the known repositories; <kbd>tab</kbd> switches to skills.sh
 - **Add repository**: any source; it is saved and appears in the repository list
-- **Installed skills**: see and remove what is installed in the current target, including skills that were copied by hand or installed with another tool (marked *not managed*; reinstall them through faehigkeiten to track updates)
+- **Installed skills**: see and remove what is installed in the current target, including skills that were copied by hand or installed with another tool (marked *not managed*; press <kbd>m</kbd> to manage them)
 - **Check for updates**: select and apply available updates
 - **Change target**: switch between a project directory and the global scope
 
@@ -60,6 +60,8 @@ fgk list                                                   # installed skills
 fgk check --exit-code                                      # exit 10 if updates are available (CI)
 fgk update                                                 # apply all available updates
 fgk remove pdf
+fgk adopt golang-cli                                       # manage a skill installed by hand or another tool
+fgk adopt my-skill --from my-org/skills --track hash       # …from an explicit source
 fgk search golang                                          # search known repositories
 fgk search --remote terraform                              # search skills.sh
 fgk repo add my-org/skills --ref main
@@ -96,6 +98,18 @@ skills:
 | `version` | skill declares `version` (or `metadata.version`) in its frontmatter | semantic version of upstream is newer |
 | `hash`    | opt-in, mainly for skills without a version | SHA-256 over all files (paths + contents) of the upstream skill differs |
 | `none`    | untracked                | never checked |
+
+### Managing existing skills
+
+Skills that were copied by hand or installed with another tool show up as *not managed*. Adopting
+one records it in the lockfile **without changing its files**:
+
+- faehigkeiten looks for a skill with the same name in the known repositories and prefers a source
+  whose content is identical to your copy; you can also name the repository yourself.
+- The lockfile stores your local version (or `0.0.0` if it has none) or the hash of your local copy,
+  so if your copy differs from upstream, the next update check offers the upstream version.
+- Skills whose source is unknown can be adopted as *local only*: they are managed (listed and removable
+  for all agents) but never checked for updates.
 
 ## Configuration
 
