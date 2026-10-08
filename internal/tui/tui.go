@@ -139,7 +139,6 @@ var (
 	footerStyle = lipgloss.NewStyle().Background(barBg).Foreground(subtle).Padding(0, 1)
 	titleStyle  = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#FFFFFF")).Background(accent).Padding(0, 1)
 	crumbStyle  = lipgloss.NewStyle().Background(barBg).Foreground(subtle)
-	helpStyle   = lipgloss.NewStyle().Foreground(subtle)
 	subtleStyle = lipgloss.NewStyle().Foreground(subtle)
 	accentStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
 	okStyle     = lipgloss.NewStyle().Foreground(okColor)
