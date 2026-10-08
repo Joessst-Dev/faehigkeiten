@@ -68,8 +68,8 @@ func DisplayName(src string) string {
 	}
 	s := strings.TrimSuffix(src, ".git")
 	if strings.HasPrefix(s, "git@") {
-		if i := strings.Index(s, ":"); i >= 0 {
-			return s[i+1:]
+		if _, after, ok := strings.Cut(s, ":"); ok {
+			return after
 		}
 	}
 	if u, err := url.Parse(s); err == nil && u.Path != "" {

@@ -640,12 +640,17 @@ func (s *updatesScreen) View() string {
 	if s.err != nil {
 		return errStyle.Render(s.err.Error())
 	}
-	v := subtleStyle.Render("Untracked skills are not checked.") + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4)
+	var b strings.Builder
+	b.WriteString(subtleStyle.Render("Untracked skills are not checked."))
+	b.WriteString("\n\n")
+	b.WriteString(s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4))
 	if s.msg != "" {
-		v += "\n" + okStyle.Render(s.msg)
+		b.WriteString("\n")
+		b.WriteString(okStyle.Render(s.msg))
 	}
 	for _, err := range s.errs {
-		v += "\n" + errStyle.Render(err.Error())
+		b.WriteString("\n")
+		b.WriteString(errStyle.Render(err.Error()))
 	}
-	return v
+	return b.String()
 }

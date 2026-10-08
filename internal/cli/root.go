@@ -99,7 +99,7 @@ func Execute(ctx context.Context, info BuildInfo, args []string, stdout, stderr 
 func splitList(vals []string) []string {
 	var out []string
 	for _, v := range vals {
-		for _, p := range strings.Split(v, ",") {
+		for p := range strings.SplitSeq(v, ",") {
 			if p = strings.TrimSpace(p); p != "" {
 				out = append(out, p)
 			}

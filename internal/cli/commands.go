@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -279,7 +280,7 @@ func newUpdateCommand() *cobra.Command {
 			out := cmd.OutOrStdout()
 			updated := 0
 			for _, s := range update.Check(cmd.Context(), a.Sources, in.Lock) {
-				if len(args) > 0 && !contains(args, s.Entry.Name) {
+				if len(args) > 0 && !slices.Contains(args, s.Entry.Name) {
 					continue
 				}
 				if s.Err != nil {
@@ -305,15 +306,6 @@ func newUpdateCommand() *cobra.Command {
 	}
 	scope.register(cmd)
 	return cmd
-}
-
-func contains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 func newRemoveCommand() *cobra.Command {

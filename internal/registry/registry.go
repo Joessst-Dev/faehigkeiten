@@ -107,9 +107,7 @@ func Build(ctx context.Context, f Fetcher, repos []Repo, refresh bool, progress 
 		sem  = make(chan struct{}, 4)
 	)
 	for _, r := range repos {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			entries, err := Scan(ctx, f, r, refresh)
@@ -124,7 +122,7 @@ func Build(ctx context.Context, f Fetcher, repos []Repo, refresh bool, progress 
 			if progress != nil {
 				progress(done, len(repos), r, err)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	idx.sort()
