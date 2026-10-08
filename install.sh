@@ -41,12 +41,24 @@ case "$arch" in
   *) die "unsupported architecture: $arch" ;;
 esac
 
+# The latest release is resolved from the redirect of /releases/latest, which,
+# unlike the GitHub API, is not rate limited for anonymous clients.
+latest_version() {
+  url="https://github.com/$REPO/releases/latest"
+  if command -v curl >/dev/null 2>&1; then
+    final=$(curl -fsSL -o /dev/null -w '%{url_effective}' "$url") || return 1
+  else
+    final=$(wget -S --spider "$url" 2>&1 | sed -n 's/^ *[Ll]ocation: *//p' | tail -n1 | tr -d '\r')
+  fi
+  case "$final" in
+    */tag/*) printf '%s\n' "${final##*/tag/}" ;;
+    *) return 1 ;;
+  esac
+}
+
 version="${FAEHIGKEITEN_VERSION:-}"
 if [ -z "$version" ]; then
-  tmpv=$(mktemp)
-  fetch "https://api.github.com/repos/$REPO/releases/latest" "$tmpv" || die "could not determine latest release"
-  version=$(sed -n 's/.*"tag_name": *"v\{0,1\}\([^"]*\)".*/\1/p' "$tmpv" | head -n1)
-  rm -f "$tmpv"
+  version=$(latest_version) || die "could not determine latest release"
   [ -n "$version" ] || die "could not determine latest release"
 fi
 version=${version#v}
