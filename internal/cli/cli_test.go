@@ -109,6 +109,15 @@ var _ = Describe("CLI", func() {
 		Expect(filepath.Join(project, lock.FileName)).NotTo(BeAnExistingFile())
 	})
 
+	It("lists skills that were not installed by faehigkeiten", func() {
+		Expect(testutil.WriteFiles(project, map[string]string{
+			".claude/skills/handmade/SKILL.md": testutil.SkillMD("handmade", "", ""),
+		})).To(Succeed())
+		code, out, _ := run("list", "-p", project)
+		Expect(code).To(Equal(0))
+		Expect(out).To(MatchRegexp(`handmade\s+not managed\s+claude-code`))
+	})
+
 	It("installs globally", func() {
 		code, _, errOut := run("install", origin, "alpha", "-g")
 		Expect(code).To(Equal(0), errOut)

@@ -270,3 +270,80 @@ func copyFile(src, dst string, perm fs.FileMode) error {
 	}
 	return out.Close()
 }
+
+// Found is a skill present in agent directories but not managed by the lockfile,
+// e.g. one copied by hand or installed with another tool.
+type Found struct {
+	Name        string
+	Description string
+	Version     string
+	// Agents lists the IDs of agents whose directory contains the skill.
+	Agents []string
+	// Dirs are the skill directories on disk.
+	Dirs []string
+}
+
+// Unmanaged scans the skill directories of all known agents for the target and
+// returns skills that are not recorded in the lockfile, sorted by name.
+func (in *Installer) Unmanaged() []Found {
+	managed := map[string]bool{}
+	for _, e := range in.Lock.Skills {
+		for _, d := range in.entryDirs(e) {
+			managed[filepath.Join(d, e.Name)] = true
+		}
+	}
+	byName := map[string]*Found{}
+	var names []string
+	scanned := map[string]bool{}
+	for _, a := range in.Registry.All() {
+		root, err := a.Dir(in.Target.Scope, in.Target.ProjectRoot, in.Target.Home)
+		if err != nil {
+			continue
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, de := range entries {
+			dir := filepath.Join(root, de.Name())
+			if managed[dir] || strings.HasPrefix(de.Name(), ".") {
+				continue
+			}
+			// Stat follows symlinks, which other installers commonly use.
+			if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+				continue
+			}
+			s, err := skill.ParseFile(filepath.Join(dir, skill.FileName))
+			if err != nil {
+				continue
+			}
+			f, ok := byName[de.Name()]
+			if !ok {
+				f = &Found{Name: de.Name(), Description: s.Description, Version: s.Version}
+				byName[de.Name()] = f
+				names = append(names, de.Name())
+			}
+			f.Agents = append(f.Agents, a.ID)
+			if !scanned[dir] {
+				scanned[dir] = true
+				f.Dirs = append(f.Dirs, dir)
+			}
+		}
+	}
+	slices.Sort(names)
+	out := make([]Found, 0, len(names))
+	for _, n := range names {
+		out = append(out, *byName[n])
+	}
+	return out
+}
+
+// RemoveFound deletes the directories of an unmanaged skill.
+func RemoveFound(f Found) error {
+	for _, d := range f.Dirs {
+		if err := os.RemoveAll(d); err != nil {
+			return err
+		}
+	}
+	return nil
+}

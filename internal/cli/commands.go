@@ -176,14 +176,18 @@ func newListCommand() *cobra.Command {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			if len(in.Lock.Skills) == 0 {
-				fmt.Fprintln(out, "no skills installed in", in.Lock.Path())
+			found := in.Unmanaged()
+			if len(in.Lock.Skills) == 0 && len(found) == 0 {
+				fmt.Fprintln(out, "no skills installed")
 				return nil
 			}
 			tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 			fmt.Fprintln(tw, "NAME\tTRACKING\tAGENTS\tSOURCE")
 			for _, e := range in.Lock.Skills {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.Name, describeTracking(e), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
+			}
+			for _, f := range found {
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", f.Name, "not managed", strings.Join(f.Agents, ","), "-")
 			}
 			return tw.Flush()
 		},

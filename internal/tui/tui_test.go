@@ -215,6 +215,23 @@ var _ = Describe("TUI", func() {
 		Expect(filepath.Join(project, ".claude", "skills", "beta")).NotTo(BeAnExistingFile())
 	})
 
+	It("shows and removes skills that were not installed by faehigkeiten", func() {
+		Expect(testutil.WriteFiles(project, map[string]string{
+			".claude/skills/handmade/SKILL.md": testutil.SkillMD("handmade", "Copied manually", ""),
+		})).To(Succeed())
+		d.keys("down", "down", "down", "enter") // Installed skills
+		v := d.view()
+		Expect(v).To(ContainSubstring("handmade"))
+		Expect(v).To(ContainSubstring("not managed"))
+		d.keys("d")
+		Expect(d.view()).To(ContainSubstring("not installed by faehigkeiten"))
+		d.keys("n")
+		Expect(filepath.Join(project, ".claude", "skills", "handmade")).To(BeADirectory())
+		d.keys("d", "y")
+		Expect(d.view()).To(ContainSubstring("removed handmade"))
+		Expect(filepath.Join(project, ".claude", "skills", "handmade")).NotTo(BeAnExistingFile())
+	})
+
 	It("cancels the wizard when the target picker is closed", func() {
 		addRepo()
 		d.keys("enter", "esc")

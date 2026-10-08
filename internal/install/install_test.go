@@ -172,4 +172,54 @@ var _ = Describe("Installer", func() {
 			Expect(fi.Mode().Perm() & 0o100).NotTo(BeZero())
 		}
 	})
+
+	Describe("Unmanaged", func() {
+		It("finds skills in agent directories that are not in the lockfile", func() {
+			_, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/manual/SKILL.md":  testutil.SkillMD("manual", "Copied by hand", "0.1.0"),
+				".agents/skills/manual/SKILL.md":  testutil.SkillMD("manual", "Copied by hand", "0.1.0"),
+				".agents/skills/other/SKILL.md":   testutil.SkillMD("other", "", ""),
+				".agents/skills/pdf/SKILL.md":     testutil.SkillMD("pdf", "unmanaged copy for another agent", ""),
+				".claude/skills/notes.txt":        "not a skill",
+				".claude/skills/empty/readme.md":  "no SKILL.md",
+				".claude/skills/.hidden/SKILL.md": testutil.SkillMD("hidden", "", ""),
+			})).To(Succeed())
+
+			found := in.Unmanaged()
+			var names []string
+			for _, f := range found {
+				names = append(names, f.Name)
+			}
+			Expect(names).To(Equal([]string{"manual", "other", "pdf"}))
+			manual := found[0]
+			Expect(manual.Agents).To(ContainElements("claude-code", "codex", "agents"))
+			Expect(manual.Dirs).To(ConsistOf(
+				filepath.Join(project, ".claude", "skills", "manual"),
+				filepath.Join(project, ".agents", "skills", "manual"),
+			))
+			Expect(manual.Version).To(Equal("0.1.0"))
+
+			Expect(install.RemoveFound(manual)).To(Succeed())
+			Expect(filepath.Join(project, ".claude", "skills", "manual")).NotTo(BeAnExistingFile())
+			Expect(filepath.Join(project, ".claude", "skills", "pdf")).To(BeADirectory(), "managed skills are untouched")
+		})
+
+		It("follows symlinked skill directories", func() {
+			if filepath.Separator != '/' {
+				Skip("symlinks need privileges on Windows")
+			}
+			Expect(testutil.WriteFiles(project, map[string]string{".agents/skills/linked/SKILL.md": testutil.SkillMD("linked", "", "")})).To(Succeed())
+			Expect(os.MkdirAll(filepath.Join(project, ".claude", "skills"), 0o755)).To(Succeed())
+			Expect(os.Symlink(filepath.Join(project, ".agents", "skills", "linked"), filepath.Join(project, ".claude", "skills", "linked"))).To(Succeed())
+			found := in.Unmanaged()
+			Expect(found).To(HaveLen(1))
+			Expect(found[0].Agents).To(ContainElement("claude-code"))
+		})
+
+		It("returns nothing when agent directories do not exist", func() {
+			Expect(in.Unmanaged()).To(BeEmpty())
+		})
+	})
 })

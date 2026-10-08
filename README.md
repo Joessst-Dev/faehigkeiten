@@ -41,7 +41,7 @@ Run `faehigkeiten` (or `fgk`) without arguments to start the TUI:
 - **Browse repositories**: pick a repository, select skills with <kbd>space</kbd>, press <kbd>enter</kbd>
 - **Search skills**: type to search the known repositories; <kbd>tab</kbd> switches to skills.sh
 - **Add repository**: any source; it is saved and appears in the repository list
-- **Installed skills**: see and remove what is installed in the current target
+- **Installed skills**: see and remove what is installed in the current target, including skills that were copied by hand or installed with another tool (marked *not managed*; reinstall them through faehigkeiten to track updates)
 - **Check for updates**: select and apply available updates
 - **Change target**: switch between a project directory and the global scope
 

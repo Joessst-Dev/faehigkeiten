@@ -335,7 +335,7 @@ type installedScreen struct {
 	env     *env
 	list    *pickList
 	in      *install.Installer
-	confirm string
+	confirm any // lock.Entry or install.Found awaiting confirmation
 	msg     string
 	err     error
 }
@@ -351,7 +351,7 @@ func (s *installedScreen) Init() tea.Cmd   { s.reload(); return nil }
 func (s *installedScreen) Resume() tea.Cmd { s.reload(); return nil }
 
 func (s *installedScreen) Help() string {
-	if s.confirm != "" {
+	if s.confirm != nil {
 		return "y confirm • n cancel"
 	}
 	return "d remove • u check updates • t change target • / filter"
@@ -364,7 +364,8 @@ func (s *installedScreen) reload() {
 		s.list.SetItems(nil)
 		return
 	}
-	items := make([]pickItem, 0, len(in.Lock.Skills))
+	found := in.Unmanaged()
+	items := make([]pickItem, 0, len(in.Lock.Skills)+len(found))
 	for _, e := range in.Lock.Skills {
 		items = append(items, pickItem{
 			Title: e.Name,
@@ -372,6 +373,13 @@ func (s *installedScreen) reload() {
 			Desc:  source.DisplayName(e.Source) + " • " + strings.Join(e.Agents, ", "),
 			Value: e,
 		})
+	}
+	for _, f := range found {
+		desc := strings.Join(f.Agents, ", ")
+		if f.Description != "" {
+			desc += " • " + f.Description
+		}
+		items = append(items, pickItem{Title: f.Name, Badge: "not managed", Desc: desc, Value: f})
 	}
 	s.list.SetItems(items)
 }
@@ -381,9 +389,33 @@ func entryBadge(e lock.Entry) string {
 	case lock.TrackVersion:
 		return "v" + strings.TrimPrefix(e.Version, "v")
 	case lock.TrackHash:
-		return "hash " + strings.TrimPrefix(e.Hash, skill.HashPrefix)[:min(8, len(strings.TrimPrefix(e.Hash, skill.HashPrefix)))]
+		h := strings.TrimPrefix(e.Hash, skill.HashPrefix)
+		return "hash " + h[:min(8, len(h))]
 	}
 	return "untracked"
+}
+
+func (s *installedScreen) remove(v any) error {
+	switch v := v.(type) {
+	case lock.Entry:
+		if err := s.in.Uninstall(v.Name); err != nil {
+			return err
+		}
+		return s.in.Lock.Save()
+	case install.Found:
+		return install.RemoveFound(v)
+	}
+	return nil
+}
+
+func confirmName(v any) string {
+	switch v := v.(type) {
+	case lock.Entry:
+		return v.Name
+	case install.Found:
+		return v.Name
+	}
+	return ""
 }
 
 func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
@@ -391,21 +423,17 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 	if !ok {
 		return nil
 	}
-	if s.confirm != "" {
-		name := s.confirm
-		s.confirm = ""
+	if s.confirm != nil {
+		v := s.confirm
+		s.confirm = nil
 		if k.String() != "y" {
 			return nil
 		}
-		if err := s.in.Uninstall(name); err != nil {
+		if err := s.remove(v); err != nil {
 			s.msg = err.Error()
 			return nil
 		}
-		if err := s.in.Lock.Save(); err != nil {
-			s.msg = err.Error()
-			return nil
-		}
-		s.msg = "removed " + name
+		s.msg = "removed " + confirmName(v)
 		s.reload()
 		return nil
 	}
@@ -417,7 +445,7 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 		return pop
 	case "d":
 		if it, ok := s.list.Current(); ok {
-			s.confirm = it.Value.(lock.Entry).Name
+			s.confirm = it.Value
 		}
 	case "u":
 		return push(newUpdatesScreen(s.env))
@@ -431,12 +459,16 @@ func (s *installedScreen) View() string {
 	if s.err != nil {
 		return errStyle.Render(s.err.Error())
 	}
-	v := subtleStyle.Render("lockfile: "+s.in.Lock.Path()) + "\n\n" + s.list.View(s.env.width, s.env.bodyHeight()-3)
-	switch {
-	case s.confirm != "":
-		v += "\n" + warnStyle.Render("Remove "+s.confirm+" from all agents? (y/n)")
-	case s.msg != "":
-		v += "\n" + okStyle.Render(s.msg)
+	v := subtleStyle.Render("lockfile: "+s.in.Lock.Path()) + "\n\n" + s.list.View(s.env.width, s.env.bodyHeight()-4)
+	switch c := s.confirm.(type) {
+	case lock.Entry:
+		v += "\n" + warnStyle.Render("Remove "+c.Name+" from all agents? (y/n)")
+	case install.Found:
+		v += "\n" + warnStyle.Render("Delete "+strings.Join(c.Dirs, ", ")+"? It was not installed by faehigkeiten. (y/n)")
+	default:
+		if s.msg != "" {
+			v += "\n" + okStyle.Render(s.msg)
+		}
 	}
 	return v
 }
