@@ -101,6 +101,7 @@ scoops:
       owner: Joessst-Dev
       name: scoop-bucket
       token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: bucket
     homepage: https://github.com/Joessst-Dev/faehigkeiten
     description: TUI to install and track agent skills from skill repositories
     license: MIT
