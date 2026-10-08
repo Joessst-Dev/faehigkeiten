@@ -1,0 +1,80 @@
+# Well-known public skill repositories shipped with faehigkeiten.
+# Star counts are approximate (2026-10) and only used for ordering.
+repos:
+  - name: obra/superpowers
+    url: https://github.com/obra/superpowers
+    description: Core software-engineering workflow skills (TDD, debugging, planning)
+    stars: 297000
+  - name: anthropics/skills
+    url: https://github.com/anthropics/skills
+    description: Official Anthropic example and document skills
+    stars: 180000
+  - name: ComposioHQ/awesome-claude-skills
+    url: https://github.com/ComposioHQ/awesome-claude-skills
+    ref: master
+    description: Large collection of app-integration and document skills
+    stars: 77000
+  - name: K-Dense-AI/claude-scientific-skills
+    url: https://github.com/K-Dense-AI/claude-scientific-skills
+    description: Scientific computing, bioinformatics and research skills
+    stars: 48000
+  - name: wshobson/agents
+    url: https://github.com/wshobson/agents
+    description: Plugins bundling skills for many engineering domains
+    stars: 40000
+  - name: github/awesome-copilot
+    url: https://github.com/github/awesome-copilot
+    description: Community skills curated by GitHub for Copilot
+    stars: 40000
+  - name: vercel-labs/agent-skills
+    url: https://github.com/vercel-labs/agent-skills
+    description: Vercel's skills for React, Next.js and deployment
+    stars: 32000
+  - name: openai/skills
+    url: https://github.com/openai/skills
+    description: Curated skills from OpenAI for Codex
+    stars: 28000
+  - name: Jeffallan/claude-skills
+    url: https://github.com/Jeffallan/claude-skills
+    description: Full-stack developer role skills
+    stars: 11800
+  - name: huggingface/skills
+    url: https://github.com/huggingface/skills
+    description: Hugging Face ML training, datasets and Hub skills
+    stars: 11200
+  - name: trailofbits/skills
+    url: https://github.com/trailofbits/skills
+    description: Security auditing and analysis skills by Trail of Bits
+    stars: 7400
+  - name: remotion-dev/skills
+    url: https://github.com/remotion-dev/skills
+    description: Video creation with Remotion
+    stars: 4900
+  - name: google-gemini/gemini-skills
+    url: https://github.com/google-gemini/gemini-skills
+    description: Skills for the Gemini API and CLI
+    stars: 4300
+  - name: samber/cc-skills-golang
+    url: https://github.com/samber/cc-skills-golang
+    description: Go best-practice skills
+    stars: 3400
+  - name: microsoft/skills
+    url: https://github.com/microsoft/skills
+    description: Azure and Microsoft SDK skills
+    stars: 3100
+  - name: cloudflare/skills
+    url: https://github.com/cloudflare/skills
+    description: Cloudflare Workers and platform skills
+    stars: 3000
+  - name: supabase/agent-skills
+    url: https://github.com/supabase/agent-skills
+    description: Supabase and Postgres skills
+    stars: 2700
+  - name: expo/skills
+    url: https://github.com/expo/skills
+    description: Expo and React Native skills
+    stars: 2700
+  - name: getsentry/skills
+    url: https://github.com/getsentry/skills
+    description: Sentry engineering skills
+    stars: 1000

@@ -1,0 +1,10 @@
+/dist/
+/faehigkeiten
+/fgk
+*.exe
+coverage.out
+*.coverprofile
+.DS_Store
+
+# Local agent configuration of the developer
+/.claude/

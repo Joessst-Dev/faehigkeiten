@@ -1,0 +1,111 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: faehigkeiten
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: faehigkeiten
+    main: ./cmd/faehigkeiten
+    binary: faehigkeiten
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
+  # The short alias is shipped as a second binary: Windows archives cannot hold
+  # symlinks, and Homebrew casks can only link binaries contained in the archive.
+  - id: fgk
+    main: ./cmd/faehigkeiten
+    binary: fgk
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
+
+archives:
+  - id: default
+    ids: [faehigkeiten, fgk]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+nfpms:
+  - id: packages
+    ids: [faehigkeiten]
+    package_name: faehigkeiten
+    vendor: Joessst-Dev
+    homepage: https://github.com/Joessst-Dev/faehigkeiten
+    maintainer: Joessst-Dev <Joessst-Dev@users.noreply.github.com>
+    description: TUI to install and track agent skills from skill repositories
+    license: MIT
+    formats: [deb, rpm, apk]
+    bindir: /usr/bin
+    contents:
+      - src: /usr/bin/faehigkeiten
+        dst: /usr/bin/fgk
+        type: symlink
+
+homebrew_casks:
+  - name: faehigkeiten
+    ids: [default]
+    binaries: [faehigkeiten, fgk]
+    repository:
+      owner: Joessst-Dev
+      name: homebrew-tap
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: https://github.com/Joessst-Dev/faehigkeiten
+    description: TUI to install and track agent skills from skill repositories
+    license: MIT
+    generate_completions_from_executable:
+      args: [completion]
+      shell_parameter_format: cobra
+    hooks:
+      post:
+        # The binaries are not notarized; drop the quarantine flag so macOS runs them.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/faehigkeiten"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/fgk"]
+          end
+
+scoops:
+  - name: faehigkeiten
+    ids: [default]
+    repository:
+      owner: Joessst-Dev
+      name: scoop-bucket
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/Joessst-Dev/faehigkeiten
+    description: TUI to install and track agent skills from skill repositories
+    license: MIT
+
+release:
+  github:
+    owner: Joessst-Dev
+    name: faehigkeiten
