@@ -20,7 +20,7 @@ brew install Joessst-Dev/tap/faehigkeiten
 **Windows (Scoop)**
 
 ```powershell
-scoop bucket add joessst-dev https://github.com/Joessst-Dev/scoop-bucket
+scoop bucket add joessst https://github.com/Joessst-Dev/scoop-bucket
 scoop install faehigkeiten
 ```
 
