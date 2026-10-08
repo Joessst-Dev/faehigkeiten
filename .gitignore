@@ -8,3 +8,6 @@ coverage.out
 
 # Local agent configuration of the developer
 /.claude/
+
+# Lockfile of skills installed into this repo with faehigkeiten
+/.faehigkeiten.lock.yaml
