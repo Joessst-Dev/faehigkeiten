@@ -44,7 +44,7 @@ func Normalize(input string) (string, error) {
 	if strings.HasPrefix(in, "file://") {
 		return in, nil
 	}
-	if strings.HasPrefix(strings.ToLower(in), "http://") {
+	if lower := strings.ToLower(in); strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "git://") {
 		return "", fmt.Errorf("refusing insecure source %q: use https:// or ssh", input)
 	}
 	if fi, err := os.Stat(in); err == nil && fi.IsDir() {
@@ -241,6 +241,25 @@ func wrapCloneErr(src string, err error) error {
 		return nil
 	}
 	return fmt.Errorf("clone %s: %w", src, err)
+}
+
+// SkillDir returns the directory at the slash-separated path rel inside the
+// checkout. It fails when the path resolves outside the checkout, e.g. through
+// a symlink committed to the repository.
+func (c *Checkout) SkillDir(rel string) (string, error) {
+	dir := filepath.Join(c.Dir, filepath.FromSlash(rel))
+	root, err := filepath.EvalSymlinks(c.Dir)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	if r, err := filepath.Rel(root, resolved); err != nil || (r != "." && !filepath.IsLocal(r)) {
+		return "", fmt.Errorf("%s points outside of %s", rel, DisplayName(c.URL))
+	}
+	return dir, nil
 }
 
 func openCheckout(src, dir string) (*Checkout, error) {

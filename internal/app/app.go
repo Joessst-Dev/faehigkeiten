@@ -226,8 +226,10 @@ func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, err
 		}
 		c := Candidate{Entry: e}
 		if co, err := a.Sources.Fetch(ctx, e.Repo.URL, e.Repo.Ref, false); err == nil {
-			if h, err := skill.Hash(filepath.Join(co.Dir, filepath.FromSlash(e.Path))); err == nil {
-				c.Identical = h == local
+			if dir, err := co.SkillDir(e.Path); err == nil {
+				if h, err := skill.Hash(dir); err == nil {
+					c.Identical = h == local
+				}
 			}
 		}
 		out = append(out, c)

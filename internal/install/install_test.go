@@ -3,6 +3,7 @@ package install_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -203,6 +204,40 @@ var _ = Describe("Installer", func() {
 		Expect(filepath.Join(project, ".claude", "skills", "My PDF", "SKILL.md")).To(BeAnExistingFile())
 		_, err = in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}, Name: "../escape"})
 		Expect(err).To(MatchError(ContainSubstring("invalid skill name")))
+		_, err = in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}, Name: ".ssh"})
+		Expect(err).To(MatchError(ContainSubstring("invalid skill name")))
+	})
+
+	Describe("symlinked skill directories in a project", func() {
+		var victim string
+
+		BeforeEach(func() {
+			if runtime.GOOS == "windows" {
+				Skip("symlinks need privileges on Windows")
+			}
+			// A cloned repository can commit .claude/skills -> anywhere.
+			victim = GinkgoT().TempDir()
+			Expect(testutil.WriteFiles(victim, map[string]string{"pdf/data.txt": "keep"})).To(Succeed())
+			Expect(os.MkdirAll(filepath.Join(project, ".claude"), 0o755)).To(Succeed())
+			Expect(os.Symlink(victim, filepath.Join(project, ".claude", "skills"))).To(Succeed())
+		})
+
+		It("refuses to install through them", func() {
+			_, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}, Force: true})
+			Expect(err).To(MatchError(ContainSubstring("symlink")))
+			Expect(filepath.Join(victim, "pdf", "data.txt")).To(BeAnExistingFile())
+		})
+
+		It("refuses to uninstall through them", func() {
+			lf.Upsert(lock.Entry{Name: "pdf", Agents: []string{"claude-code"}, Tracking: lock.TrackNone})
+			Expect(in.Uninstall("pdf")).To(MatchError(ContainSubstring("symlink")))
+			Expect(filepath.Join(victim, "pdf", "data.txt")).To(BeAnExistingFile())
+		})
+
+		It("does not report their content as unmanaged skills", func() {
+			Expect(testutil.WriteFiles(victim, map[string]string{"other/SKILL.md": testutil.SkillMD("other", "x", "")})).To(Succeed())
+			Expect(in.Unmanaged()).To(BeEmpty())
+		})
 	})
 
 	It("leaves every copy untouched when one of them cannot be written", func() {

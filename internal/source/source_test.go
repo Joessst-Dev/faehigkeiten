@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/go-git/go-git/v5"
 	. "github.com/onsi/ginkgo/v2"
@@ -32,10 +33,14 @@ var _ = Describe("Normalize", func() {
 		Expect(source.IsLocal(got)).To(BeTrue())
 	})
 
-	It("rejects insecure http URLs", func() {
-		_, err := source.Normalize("http://example.com/skills.git")
-		Expect(err).To(MatchError(ContainSubstring("insecure")))
-	})
+	DescribeTable("rejects unencrypted URLs",
+		func(in string) {
+			_, err := source.Normalize(in)
+			Expect(err).To(MatchError(ContainSubstring("insecure")))
+		},
+		Entry("http", "http://example.com/skills.git"),
+		Entry("git protocol", "git://example.com/skills.git"),
+	)
 
 	It("rejects garbage", func() {
 		_, err := source.Normalize("not a source")
@@ -80,6 +85,33 @@ var _ = Describe("Manager", func() {
 		Expect(co.Dir).To(Equal(origin))
 		Expect(co.Commit).To(Equal(head()))
 		Expect(co.Ref).To(Equal("master"))
+	})
+
+	Describe("SkillDir", func() {
+		var co *source.Checkout
+
+		BeforeEach(func() {
+			if runtime.GOOS == "windows" {
+				Skip("symlinks need privileges on Windows")
+			}
+			co = &source.Checkout{URL: "https://example.com/a/b", Dir: GinkgoT().TempDir()}
+			Expect(testutil.WriteFiles(co.Dir, map[string]string{"skills/x/SKILL.md": "x"})).To(Succeed())
+		})
+
+		It("returns directories inside the checkout", func() {
+			Expect(co.SkillDir("skills/x")).To(Equal(filepath.Join(co.Dir, "skills", "x")))
+			Expect(co.SkillDir(".")).To(Equal(co.Dir))
+			Expect(os.Symlink("skills", filepath.Join(co.Dir, "alias"))).To(Succeed())
+			Expect(co.SkillDir("alias/x")).To(Equal(filepath.Join(co.Dir, "alias", "x")))
+		})
+
+		It("rejects paths that a symlink leads outside the checkout", func() {
+			outside := GinkgoT().TempDir()
+			Expect(testutil.WriteFiles(outside, map[string]string{"private/SKILL.md": "secret"})).To(Succeed())
+			Expect(os.Symlink(outside, filepath.Join(co.Dir, "escape"))).To(Succeed())
+			_, err := co.SkillDir("escape/private")
+			Expect(err).To(MatchError(ContainSubstring("outside")))
+		})
 	})
 
 	It("uses plain directories without git", func() {

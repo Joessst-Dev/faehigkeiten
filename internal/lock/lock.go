@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -108,16 +109,37 @@ func Load(p string) (*File, error) {
 	return f, nil
 }
 
+// ValidateName rejects skill directory names that could escape or hide in an
+// agent's skill directory: path separators, drive or stream separators,
+// control characters and leading dots (which also covers "." and "..").
+func ValidateName(name string) error {
+	if name == "" || strings.HasPrefix(name, ".") || strings.ContainsAny(name, `/\:`) ||
+		hasControl(name) || !filepath.IsLocal(name) {
+		return fmt.Errorf("invalid skill name %q", name)
+	}
+	return nil
+}
+
 // validate rejects entries that could make file operations escape the skill
-// directories, e.g. from a tampered lockfile committed to a project.
+// directories or garble terminal output, e.g. from a tampered lockfile
+// committed to a project.
 func (e Entry) validate() error {
-	if e.Name == "" || e.Name == "." || e.Name == ".." || strings.ContainsAny(e.Name, `/\`) {
-		return fmt.Errorf("invalid skill name %q", e.Name)
+	if err := ValidateName(e.Name); err != nil {
+		return err
 	}
 	if e.Path != "" && e.Path != "." && !filepath.IsLocal(filepath.FromSlash(e.Path)) {
 		return fmt.Errorf("skill %s: invalid path %q", e.Name, e.Path)
 	}
+	for _, v := range append([]string{e.Source, e.Path, e.Ref, e.Commit, e.Version, e.Hash, string(e.Tracking)}, e.Agents...) {
+		if hasControl(v) {
+			return fmt.Errorf("skill %s: invalid value %q", e.Name, v)
+		}
+	}
 	return nil
+}
+
+func hasControl(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) })
 }
 
 // Path returns where the lockfile is stored.

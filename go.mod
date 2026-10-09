@@ -2,6 +2,8 @@ module github.com/Joessst-Dev/faehigkeiten
 
 go 1.26.0
 
+toolchain go1.26.9
+
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
 	github.com/charmbracelet/bubbles v1.0.0

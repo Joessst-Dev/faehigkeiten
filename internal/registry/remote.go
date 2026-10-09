@@ -9,6 +9,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
 )
 
 // EnvSkillsAPI overrides the skills.sh API base URL.
@@ -63,6 +65,9 @@ func (r *RemoteSearch) Search(ctx context.Context, query string, limit int) ([]R
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, fmt.Errorf("skills.sh search: %w", err)
+	}
+	for i, h := range body.Skills {
+		body.Skills[i].ID, body.Skills[i].Name, body.Skills[i].Source = skill.Clean(h.ID), skill.Clean(h.Name), skill.Clean(h.Source)
 	}
 	return body.Skills, nil
 }

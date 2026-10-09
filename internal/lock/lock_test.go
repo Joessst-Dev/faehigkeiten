@@ -87,7 +87,17 @@ var _ = Describe("Lockfile", func() {
 		Entry("empty name", "''", "skills/x"),
 		Entry("parent path", "x", "'../../home/u/.ssh'"),
 		Entry("absolute path", "x", "/etc"),
+		Entry("hidden name", "'.ssh'", "skills/x"),
+		Entry("drive or stream separator", "'c:x'", "skills/x"),
+		Entry("escape sequence in name", `"x\e[2J"`, "skills/x"),
+		Entry("escape sequence in path", "x", `"skills/\e[2J"`),
 	)
+
+	It("rejects control characters in other fields", func() {
+		Expect(os.WriteFile(p, []byte("version: 1\nskills:\n  - name: x\n    source: \"https://e.com/\\e]8;;x\"\n"), 0o644)).To(Succeed())
+		_, err := lock.Load(p)
+		Expect(err).To(MatchError(ContainSubstring("invalid value")))
+	})
 
 	It("accepts root-level skills", func() {
 		Expect(os.WriteFile(p, []byte("version: 1\nskills:\n  - name: solo\n    path: .\n"), 0o644)).To(Succeed())
