@@ -9,6 +9,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/agent"
+	"github.com/Joessst-Dev/faehigkeiten/internal/config"
 	"github.com/Joessst-Dev/faehigkeiten/internal/install"
 	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
@@ -240,6 +241,18 @@ var _ = Describe("Installer", func() {
 		})
 	})
 
+	It("skips agents that no longer support the scope when uninstalling", func() {
+		reg = agent.NewRegistry(&config.Config{Agents: map[string]config.AgentOverride{"only-global": {GlobalDir: ".x/skills"}}})
+		in.Registry = reg
+		_, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}})
+		Expect(err).NotTo(HaveOccurred())
+		e, _ := lf.Get("pdf")
+		e.Agents = append(e.Agents, "only-global")
+		lf.Upsert(e)
+		Expect(in.Uninstall("pdf")).To(Succeed())
+		Expect(filepath.Join(project, ".claude", "skills", "pdf")).NotTo(BeAnExistingFile())
+	})
+
 	It("leaves every copy untouched when one of them cannot be written", func() {
 		_, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}})
 		Expect(err).NotTo(HaveOccurred())
@@ -301,6 +314,20 @@ var _ = Describe("Installer", func() {
 			Expect(found[0].Agents).To(ContainElement("claude-code"))
 		})
 
+		It("skips directories whose names cannot be managed", func() {
+			if runtime.GOOS == "windows" {
+				Skip("these names are not allowed on Windows")
+			}
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/a:b/SKILL.md":      testutil.SkillMD("ab", "", ""),
+				".claude/skills/x\x1b[2J/SKILL.md": testutil.SkillMD("x", "", ""),
+				".claude/skills/fine/SKILL.md":     testutil.SkillMD("fine", "", ""),
+			})).To(Succeed())
+			found := in.Unmanaged()
+			Expect(found).To(HaveLen(1))
+			Expect(found[0].Name).To(Equal("fine"))
+		})
+
 		It("returns nothing when agent directories do not exist", func() {
 			Expect(in.Unmanaged()).To(BeEmpty())
 		})
@@ -330,6 +357,13 @@ var _ = Describe("Installer", func() {
 			Expect(e.Agents).To(Equal([]string{"claude-code"}))
 			Expect(in.Unmanaged()).To(BeEmpty())
 			Expect(filepath.Join(project, ".claude", "skills", "pdf", "scripts", "run.sh")).To(BeAnExistingFile())
+		})
+
+		It("rejects names a lockfile cannot hold", func() {
+			bad := install.Found{Name: "a:b", Agents: []string{"claude-code"}, Dirs: found.Dirs}
+			_, err := in.Adopt(install.AdoptRequest{Found: bad})
+			Expect(err).To(MatchError(ContainSubstring("invalid skill name")))
+			Expect(lf.Skills).To(BeEmpty())
 		})
 
 		It("hashes symlinked copies by their content", func() {

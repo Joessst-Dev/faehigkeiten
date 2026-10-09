@@ -271,15 +271,27 @@ func (in *Installer) Uninstall(name string) error {
 }
 
 // entryDirs returns the agent directories recorded for an entry, skipping
-// agents that are no longer known.
+// agents that are no longer known or no longer support the target's scope.
+// Unsafe directories are still an error.
 func (in *Installer) entryDirs(e lock.Entry) ([]string, error) {
-	var agents []agent.Agent
+	var dirs []string
 	for _, id := range e.Agents {
-		if a, ok := in.Registry.Get(id); ok {
-			agents = append(agents, a)
+		a, ok := in.Registry.Get(id)
+		if !ok {
+			continue
+		}
+		if _, err := a.Dir(in.Target.Scope, in.Target.ProjectRoot, in.Target.Home); err != nil {
+			continue
+		}
+		d, err := in.Target.dir(a)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(dirs, d) {
+			dirs = append(dirs, d)
 		}
 	}
-	return in.Target.Dirs(agents)
+	return dirs, nil
 }
 
 func (in *Installer) now() time.Time {
@@ -408,7 +420,8 @@ func (in *Installer) Unmanaged() []Found {
 		}
 		for _, de := range entries {
 			dir := filepath.Join(root, de.Name())
-			if managed[dir] || strings.HasPrefix(de.Name(), ".") {
+			// Names a lockfile cannot hold (e.g. hidden ones) cannot be managed.
+			if managed[dir] || lock.ValidateName(de.Name()) != nil {
 				continue
 			}
 			// Stat follows symlinks, which other installers commonly use.
@@ -467,6 +480,9 @@ type AdoptRequest struct {
 // is not saved.
 func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 	f := req.Found
+	if err := lock.ValidateName(f.Name); err != nil {
+		return lock.Entry{}, err
+	}
 	if len(f.Dirs) == 0 {
 		return lock.Entry{}, fmt.Errorf("skill %s has no directories", f.Name)
 	}
