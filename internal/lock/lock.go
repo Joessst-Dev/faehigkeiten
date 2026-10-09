@@ -12,11 +12,11 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/agent"
+	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
 )
 
 // FileName is the lockfile name used for project installations.
@@ -139,7 +139,7 @@ func (e Entry) validate() error {
 }
 
 func hasControl(s string) bool {
-	return strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) })
+	return skill.Clean(s) != s
 }
 
 // Path returns where the lockfile is stored.
