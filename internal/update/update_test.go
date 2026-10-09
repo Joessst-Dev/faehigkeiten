@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/go-git/go-git/v5"
 	. "github.com/onsi/ginkgo/v2"
@@ -124,6 +125,25 @@ var _ = Describe("Check and Apply", func() {
 		for _, s := range update.Check(ctx, mgr, in) {
 			Expect(s.Available).To(BeFalse())
 		}
+	})
+
+	It("does not replace directories outside the project through a symlink", func() {
+		if runtime.GOOS == "windows" {
+			Skip("symlinks need privileges on Windows")
+		}
+		// A tampered lockfile without a hash bypasses the local-changes check;
+		// the symlinked skills directory must still stop the update.
+		victim := GinkgoT().TempDir()
+		Expect(testutil.WriteFiles(victim, map[string]string{"important/data.txt": "keep"})).To(Succeed())
+		Expect(os.RemoveAll(filepath.Join(project, ".claude", "skills"))).To(Succeed())
+		Expect(os.Symlink(victim, filepath.Join(project, ".claude", "skills"))).To(Succeed())
+		lf.Upsert(lock.Entry{Name: "important", Source: url, Path: "skills/hash", Agents: []string{"claude-code"}, Tracking: lock.TrackHash})
+
+		st := statusFor(update.Check(ctx, mgr, in), "important")
+		Expect(st.Available).To(BeTrue())
+		_, err := update.Apply(in, st)
+		Expect(err).To(MatchError(ContainSubstring("symlink")))
+		Expect(filepath.Join(victim, "important", "data.txt")).To(BeAnExistingFile())
 	})
 
 	It("reports skills removed upstream", func() {

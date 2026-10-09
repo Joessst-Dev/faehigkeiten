@@ -35,7 +35,7 @@ type Target struct {
 func (t Target) Dirs(agents []agent.Agent) ([]string, error) {
 	var dirs []string
 	for _, a := range agents {
-		d, err := a.Dir(t.Scope, t.ProjectRoot, t.Home)
+		d, err := t.dir(a)
 		if err != nil {
 			return nil, err
 		}
@@ -44,6 +44,47 @@ func (t Target) Dirs(agents []agent.Agent) ([]string, error) {
 		}
 	}
 	return dirs, nil
+}
+
+// dir returns the skill directory of a for this target. In a project, the
+// directory must not be reached through a symlink: a cloned repository could
+// otherwise commit e.g. .claude/skills -> ../.. and redirect installs and
+// removals to anywhere on disk.
+func (t Target) dir(a agent.Agent) (string, error) {
+	d, err := a.Dir(t.Scope, t.ProjectRoot, t.Home)
+	if err != nil {
+		return "", err
+	}
+	if t.Scope == agent.ScopeProject {
+		if err := noSymlinks(t.ProjectRoot, d); err != nil {
+			return "", fmt.Errorf("agent %s: %w", a.ID, err)
+		}
+	}
+	return d, nil
+}
+
+// noSymlinks fails if any existing path component of dir below root is a
+// symlink. Directories configured outside root are left to the user.
+func noSymlinks(root, dir string) error {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || !filepath.IsLocal(rel) {
+		return nil
+	}
+	p := root
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		p = filepath.Join(p, part)
+		fi, err := os.Lstat(p)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("refusing to use %s: it is a symlink", p)
+		}
+	}
+	return nil
 }
 
 // Request describes a single skill installation.
@@ -110,8 +151,8 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 	}
 	name := DirName(req.Skill.Name)
 	if req.Name != "" {
-		if req.Name != filepath.Base(req.Name) || req.Name == "." || req.Name == ".." {
-			return lock.Entry{}, fmt.Errorf("invalid skill name %q", req.Name)
+		if err := lock.ValidateName(req.Name); err != nil {
+			return lock.Entry{}, err
 		}
 		name = req.Name
 	}
@@ -127,7 +168,9 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 	}
 	var prevDirs []string
 	if managed {
-		prevDirs = in.entryDirs(prev)
+		if prevDirs, err = in.entryDirs(prev); err != nil {
+			return lock.Entry{}, err
+		}
 	}
 	if !req.Force {
 		for _, d := range dirs {
@@ -187,7 +230,11 @@ func (in *Installer) Modified(e lock.Entry) (bool, error) {
 	if e.Hash == "" {
 		return false, nil
 	}
-	for _, d := range in.entryDirs(e) {
+	dirs, err := in.entryDirs(e)
+	if err != nil {
+		return false, err
+	}
+	for _, d := range dirs {
 		dir := filepath.Join(d, e.Name)
 		if !exists(dir) {
 			continue // a missing copy is restored by the next install
@@ -210,7 +257,11 @@ func (in *Installer) Uninstall(name string) error {
 	if !ok {
 		return fmt.Errorf("skill %s is not installed", name)
 	}
-	for _, d := range in.entryDirs(e) {
+	dirs, err := in.entryDirs(e)
+	if err != nil {
+		return err
+	}
+	for _, d := range dirs {
 		if err := os.RemoveAll(filepath.Join(d, e.Name)); err != nil {
 			return err
 		}
@@ -221,15 +272,14 @@ func (in *Installer) Uninstall(name string) error {
 
 // entryDirs returns the agent directories recorded for an entry, skipping
 // agents that are no longer known.
-func (in *Installer) entryDirs(e lock.Entry) []string {
+func (in *Installer) entryDirs(e lock.Entry) ([]string, error) {
 	var agents []agent.Agent
 	for _, id := range e.Agents {
 		if a, ok := in.Registry.Get(id); ok {
 			agents = append(agents, a)
 		}
 	}
-	dirs, _ := in.Target.Dirs(agents)
-	return dirs
+	return in.Target.Dirs(agents)
 }
 
 func (in *Installer) now() time.Time {
@@ -339,7 +389,8 @@ type Found struct {
 func (in *Installer) Unmanaged() []Found {
 	managed := map[string]bool{}
 	for _, e := range in.Lock.Skills {
-		for _, d := range in.entryDirs(e) {
+		dirs, _ := in.entryDirs(e)
+		for _, d := range dirs {
 			managed[filepath.Join(d, e.Name)] = true
 		}
 	}
@@ -347,7 +398,7 @@ func (in *Installer) Unmanaged() []Found {
 	var names []string
 	scanned := map[string]bool{}
 	for _, a := range in.Registry.All() {
-		root, err := a.Dir(in.Target.Scope, in.Target.ProjectRoot, in.Target.Home)
+		root, err := in.Target.dir(a)
 		if err != nil {
 			continue
 		}

@@ -144,6 +144,16 @@ var _ = Describe("RemoteSearch", func() {
 		Expect(hits).To(ConsistOf(registry.RemoteSkill{ID: "anthropics/skills/pdf", Name: "pdf", Installs: 42, Source: "anthropics/skills"}))
 	})
 
+	It("strips control characters from results", func() {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write([]byte(`{"skills":[{"id":"a/b/x","name":"x\u001b[2J","source":"a/b\u202e"}]}`))
+		}))
+		DeferCleanup(srv.Close)
+		hits, err := (&registry.RemoteSearch{BaseURL: srv.URL, Client: srv.Client()}).Search(context.Background(), "x", 1)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(hits).To(ConsistOf(registry.RemoteSkill{ID: "a/b/x", Name: "x [2J", Source: "a/b"}))
+	})
+
 	It("reports HTTP errors", func() {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusForbidden)

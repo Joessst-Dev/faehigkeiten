@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -62,9 +63,28 @@ func ParseFile(file string) (Skill, error) {
 		return Skill{}, fmt.Errorf("parse %s: %w", file, err)
 	}
 	if s.Name == "" {
-		s.Name = filepath.Base(filepath.Dir(file))
+		s.Name = Clean(filepath.Base(filepath.Dir(file)))
 	}
 	return s, nil
+}
+
+// Clean makes text from untrusted repositories safe to print: control
+// characters (including terminal escape sequences' ESC) become spaces and
+// bidirectional overrides are dropped.
+func Clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case unicode.Is(unicode.Bidi_Control, r):
+			return -1
+		case unicode.IsControl(r):
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+func hasControl(s string) bool {
+	return Clean(s) != s
 }
 
 // Parse extracts metadata from SKILL.md content.
@@ -78,8 +98,8 @@ func Parse(data []byte) (Skill, error) {
 		return Skill{}, err
 	}
 	s := Skill{
-		Name:        strings.TrimSpace(fm.Name),
-		Description: strings.TrimSpace(fm.Description),
+		Name:        strings.TrimSpace(Clean(fm.Name)),
+		Description: strings.TrimSpace(Clean(fm.Description)),
 		Version:     scalar(fm.Version),
 	}
 	if s.Version == "" && fm.Metadata != nil {
@@ -96,7 +116,7 @@ func scalar(v any) string {
 	case map[string]any, []any:
 		return ""
 	}
-	return strings.TrimSpace(fmt.Sprint(v))
+	return strings.TrimSpace(Clean(fmt.Sprint(v)))
 }
 
 func extractFrontmatter(data []byte) ([]byte, bool) {
@@ -152,6 +172,10 @@ func Discover(root string) ([]Skill, error) {
 		rel, err := filepath.Rel(root, dir)
 		if err != nil {
 			return err
+		}
+		if hasControl(rel) {
+			// Such paths cannot be printed safely or recorded in a lockfile.
+			return filepath.SkipDir
 		}
 		s.Dir = dir
 		s.Path = filepath.ToSlash(rel)

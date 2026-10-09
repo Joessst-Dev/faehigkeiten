@@ -77,7 +77,11 @@ func Check(ctx context.Context, f Fetcher, in *install.Installer) []Status {
 
 func compare(st *Status, co *source.Checkout) {
 	e := st.Entry
-	dir := filepath.Join(co.Dir, filepath.FromSlash(e.Path))
+	dir, err := co.SkillDir(e.Path)
+	if err != nil {
+		st.Err = fmt.Errorf("skill %s: %w", e.Name, err)
+		return
+	}
 	s, err := skill.ParseFile(filepath.Join(dir, skill.FileName))
 	if err != nil {
 		st.Err = fmt.Errorf("skill %s no longer found at %s: %w", e.Name, e.Path, err)

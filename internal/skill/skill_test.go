@@ -22,6 +22,14 @@ var _ = Describe("Parse", func() {
 		Expect(s.HasVersion()).To(BeTrue())
 	})
 
+	It("strips terminal escape sequences and bidi overrides", func() {
+		s, err := skill.Parse([]byte("---\nname: \"pdf\\e[2J\"\ndescription: \"safe\\u202Eevil\\nline\"\nversion: \"1.0\\a\"\n---\n"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(s.Name).To(Equal("pdf [2J"))
+		Expect(s.Description).To(Equal("safeevil line"))
+		Expect(s.Version).To(Equal("1.0"))
+	})
+
 	It("falls back to metadata.version", func() {
 		s, err := skill.Parse([]byte("---\nname: x\nmetadata:\n  author: me\n  version: \"2.0.1\"\n---\n"))
 		Expect(err).NotTo(HaveOccurred())
@@ -88,6 +96,18 @@ var _ = Describe("Discover", func() {
 		Expect(err).NotTo(HaveOccurred())
 		for _, s := range skills {
 			Expect(s.Name).NotTo(Equal("leaked"))
+		}
+	})
+
+	It("skips skills whose path contains control characters", func() {
+		if runtime.GOOS == "windows" {
+			Skip("control characters are not allowed in Windows file names")
+		}
+		Expect(testutil.WriteFiles(root, map[string]string{"evil\x1b[2J/SKILL.md": testutil.SkillMD("evil", "", "")})).To(Succeed())
+		skills, err := skill.Discover(root)
+		Expect(err).NotTo(HaveOccurred())
+		for _, s := range skills {
+			Expect(s.Name).NotTo(Equal("evil"))
 		}
 	})
 
