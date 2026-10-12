@@ -162,6 +162,16 @@ var _ = Describe("Index", func() {
 		Expect(fixed.Errors).NotTo(HaveKey("https://x/down"))
 	})
 
+	It("marks repositories as scanned without touching the original", func() {
+		idx := registry.Build(context.Background(), f, repos[:1], false, nil)
+		extra := registry.Repo{Name: "c", URL: "https://x/c", Ref: "v1"}
+		marked := idx.WithScanned(extra)
+		Expect(idx.Scanned).NotTo(HaveKey("https://x/c#v1"))
+		Expect(marked.Scanned).To(HaveKeyWithValue("https://x/c#v1", idx.BuiltAt))
+		Expect(marked.Scanned).To(HaveKeyWithValue("https://x/a", idx.Scanned["https://x/a"]))
+		Expect(marked.Missing([]registry.Repo{repos[0], extra})).To(BeEmpty())
+	})
+
 	It("reports repositories that were never indexed or failed long ago", func() {
 		idx := registry.Build(context.Background(), f, repos[:2], false, nil)
 		extra := registry.Repo{Name: "c", URL: "https://x/c"}
@@ -255,6 +265,54 @@ var _ = Describe("Indexer", func() {
 		Expect(f.count()).To(Equal(map[string]int{"https://x/a": 1, "https://x/b": 1, "https://x/c": 1}))
 	})
 
+	It("converts a cache written before scan times were recorded", func() {
+		pinned := registry.Repo{Name: "c", URL: "https://x/c", Ref: "v1"}
+		repos = append(repos, pinned)
+		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}}],"errors":{"https://x/c":"boom"}}`
+		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
+
+		idx, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.count()).To(Equal(map[string]int{"https://x/b": 1}),
+			"c failed at its pinned ref; b left no trace, so it may be new")
+		Expect(idx.Errors).To(HaveKey("https://x/c"))
+
+		cached, _, err := registry.LoadIndexAny(x.Path, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cached.Scanned).To(HaveKey("https://x/a"))
+		Expect(cached.Scanned).To(HaveKey("https://x/b"))
+		Expect(cached.Scanned).To(HaveKey("https://x/c#v1"), "the converted cache is saved")
+	})
+
+	It("re-indexes a repository whose ref changed since an old cache was built", func() {
+		repos[0].Ref = "v2"
+		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}},{"name":"docx","path":"docx","repo":{"name":"b","url":"https://x/b"}}]}`
+		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
+
+		idx, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.count()).To(Equal(map[string]int{"https://x/a": 1}))
+		Expect(idx.Scanned).To(HaveKey("https://x/a#v2"))
+	})
+
+	It("saves a converted old cache in the background", func() {
+		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}},{"name":"docx","path":"docx","repo":{"name":"b","url":"https://x/b"}}]}`
+		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
+
+		done := x.Start(context.Background(), false, nil)
+		Eventually(done).Should(BeClosed())
+		Expect(f.count()).To(BeEmpty())
+		_, st := x.Snapshot()
+		Expect(st.Building).To(BeFalse())
+		Expect(st.Err).NotTo(HaveOccurred())
+		data, err := os.ReadFile(x.Path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring(`"scanned"`))
+	})
+
 	It("serves requests made during a build before completing it", func() {
 		f.gate, f.gateURL = make(chan struct{}), "https://x/b"
 		done := x.Start(context.Background(), false, nil)
@@ -326,6 +384,73 @@ var _ = Describe("Indexer", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(idx.Entries).To(HaveLen(1))
 		Expect(idx.Scanned).NotTo(HaveKey("https://x/b"))
+
+		cached, _, err := registry.LoadIndexAny(x.Path, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cached.Entries).To(HaveLen(1), "the trimmed index is saved")
+		Expect(cached.Scanned).NotTo(HaveKey("https://x/b"))
+	})
+
+	It("does not fail when only saving a trimmed index fails", func() {
+		_, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		dir := filepath.Dir(x.Path)
+		Expect(os.RemoveAll(dir)).To(Succeed())
+		Expect(os.WriteFile(dir, nil, 0o644)).To(Succeed(), "saving into it fails")
+
+		repos = repos[:1]
+		idx, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(idx.Entries).To(HaveLen(1))
+	})
+
+	It("keeps a cancellation when a queued request only drops repositories", func() {
+		_, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		c := GinkgoT().TempDir()
+		Expect(testutil.WriteFiles(c, map[string]string{"go/SKILL.md": testutil.SkillMD("go", "Go", "")})).To(Succeed())
+		f.dirs["https://x/c"] = c
+		f.gate, f.gateURL = make(chan struct{}), "https://x/c"
+		repos = append(repos, registry.Repo{Name: "c", URL: "https://x/c"})
+		ctx, cancel := context.WithCancel(context.Background())
+		done := x.Start(ctx, false, nil)
+		Eventually(func() int { return f.count()["https://x/c"] }).Should(Equal(1))
+
+		repos = repos[:1] // drops b, which is indexed, and c
+		x.Start(context.Background(), false, nil)
+		cancel()
+		Eventually(done).Should(BeClosed())
+		_, st := x.Snapshot()
+		Expect(st.Err).To(MatchError(context.Canceled), "saving does not hide the cancelled round")
+
+		cached, _, err := registry.LoadIndexAny(x.Path, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cached.Entries).To(HaveLen(1), "the trimmed index is saved")
+		idx, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(idx.Entries).To(HaveLen(1))
+	})
+
+	It("saves an index trimmed by a request queued during a build", func() {
+		_, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		c := GinkgoT().TempDir()
+		Expect(testutil.WriteFiles(c, map[string]string{"go/SKILL.md": testutil.SkillMD("go", "Go", "")})).To(Succeed())
+		f.dirs["https://x/c"] = c
+		f.gate, f.gateURL = make(chan struct{}), "https://x/c"
+		repos = append(repos, registry.Repo{Name: "c", URL: "https://x/c"})
+		done := x.Start(context.Background(), false, nil)
+
+		repos = repos[:1]
+		x.Start(context.Background(), false, nil)
+		close(f.gate)
+		Eventually(done).Should(BeClosed())
+
+		cached, _, err := registry.LoadIndexAny(x.Path, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cached.Entries).To(HaveLen(1))
+		Expect(cached.Scanned).To(HaveLen(1))
 	})
 
 	It("rebuilds for a waiter whose build was cancelled by another caller", func() {

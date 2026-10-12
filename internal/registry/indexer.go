@@ -9,9 +9,11 @@ import (
 
 // IndexStatus describes the state of an Indexer.
 type IndexStatus struct {
-	// Building is set while repositories are being indexed.
+	// Building is set while repositories are being indexed or the index is
+	// saved.
 	Building bool
-	// Done and Total count the repositories of the current or last build.
+	// Done and Total count the repositories of the current or last build;
+	// Total is 0 while the index is only saved.
 	Done, Total int
 	// Gen increases whenever the index changes.
 	Gen uint64
@@ -36,6 +38,9 @@ type Indexer struct {
 	idx *Index // never mutated once published
 	st  IndexStatus
 	run *indexRun // the running build; nil when idle
+	// saved is the index last read from or written to Path. When idx differs
+	// and nothing needs indexing, a build only saves it.
+	saved *Index
 }
 
 // indexRun is one call to Start that had work to do. Requests made while it
@@ -131,6 +136,13 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 	before := x.idx
 	if x.idx == nil {
 		if cached != nil {
+			if cached.legacy {
+				// cached is not published yet, so it may still change. It
+				// differs from the file now, so it is saved.
+				cached.finishLegacy(req.repos)
+			} else {
+				x.saved = cached
+			}
 			x.idx = cached
 		} else {
 			x.idx = NewIndex()
@@ -138,7 +150,7 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 		}
 	}
 	todo, full := x.plan(req)
-	if len(todo) == 0 {
+	if len(todo) == 0 && x.idx == x.saved {
 		// Only signal a change when there is one, so pollers do not redo
 		// their work for nothing.
 		if x.idx != before || x.st.Err != nil {
@@ -166,21 +178,33 @@ func (x *Indexer) plan(req *indexRequest) (todo []Repo, full bool) {
 	return x.idx.Missing(req.repos), false
 }
 
-// begin resets the status for a build of n repositories. x.mu must be held.
+// begin resets the status for a build of n repositories, or for only saving
+// when n is 0. x.mu must be held.
 func (x *Indexer) begin(n int) {
 	x.st = IndexStatus{Building: true, Total: n, Gen: x.st.Gen + 1}
 }
 
+// build indexes todo and serves the requests queued meanwhile. With nothing
+// to index, a round only saves the index, which changed without a build:
+// repositories were dropped or an old cache was converted.
 func (x *Indexer) build(r *indexRun, req *indexRequest, todo []Repo, full bool) {
+	var err error
 	for {
-		err := x.buildOnce(req, todo, full)
+		if len(todo) > 0 {
+			err = x.buildOnce(req, todo, full)
+		} else {
+			// Best-effort: the index in memory is complete either way, and
+			// err keeps the outcome of an earlier round, such as a
+			// cancellation.
+			_ = x.save()
+		}
 
 		x.mu.Lock()
 		if r.queued != nil {
 			// Serve requests made during this build: they may want a
 			// re-fetch or know about repositories added since it began.
 			req, r.queued = r.queued, nil
-			if todo, full = x.plan(req); len(todo) > 0 {
+			if todo, full = x.plan(req); len(todo) > 0 || x.idx != x.saved {
 				x.begin(len(todo))
 				x.mu.Unlock()
 				continue
@@ -219,17 +243,29 @@ func (x *Indexer) buildOnce(req *indexRequest, repos []Repo, full bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	x.mu.Lock()
 	if full {
+		x.mu.Lock()
 		idx := x.idx.Clone()
 		idx.BuiltAt = started
 		x.idx = idx
+		x.mu.Unlock()
 	}
+	return x.save()
+}
+
+// save writes the current index to Path. Only the build goroutine saves, so
+// writes never overlap, and published indexes are immutable, so the write
+// needs no x.mu.
+func (x *Indexer) save() error {
+	x.mu.Lock()
 	idx := x.idx
 	x.mu.Unlock()
-	// Published indexes are immutable, and only one build runs at a time,
-	// so saving needs no lock.
-	return idx.Save(x.Path)
+	err := idx.Save(x.Path)
+	x.mu.Lock()
+	// Also after a failure, so a failing disk is not retried on every Start.
+	x.saved = idx
+	x.mu.Unlock()
+	return err
 }
 
 // Snapshot returns the current index (nil before the first Start) and status.
