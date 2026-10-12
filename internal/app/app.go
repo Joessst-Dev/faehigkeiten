@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/agent"
 	"github.com/Joessst-Dev/faehigkeiten/internal/config"
@@ -29,6 +30,9 @@ type App struct {
 	ConfigDir string
 	CacheDir  string
 	Home      string
+
+	indexerOnce sync.Once
+	indexer     *registry.Indexer
 }
 
 // New loads configuration and resolves state directories.
@@ -102,22 +106,23 @@ func (a *App) DefaultAgents(t install.Target) []string {
 // Repos returns user and builtin repositories.
 func (a *App) Repos() []registry.Repo { return registry.Repos(a.Config) }
 
-// Index returns the cached skill index, rebuilding it when stale or when refresh is set.
-func (a *App) Index(ctx context.Context, refresh bool, progress registry.Progress) (*registry.Index, error) {
-	p := registry.IndexPath(a.CacheDir)
-	if !refresh {
-		if idx, err := registry.LoadIndex(p, registry.DefaultTTL); err == nil && idx != nil {
-			return idx, nil
+// Indexer returns the shared background indexer.
+func (a *App) Indexer() *registry.Indexer {
+	a.indexerOnce.Do(func() {
+		a.indexer = &registry.Indexer{
+			Fetcher: a.Sources,
+			Path:    registry.IndexPath(a.CacheDir),
+			Repos:   a.Repos,
+			TTL:     registry.DefaultTTL,
 		}
-	}
-	idx := registry.Build(ctx, a.Sources, a.Repos(), refresh, progress)
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := idx.Save(p); err != nil {
-		return nil, err
-	}
-	return idx, nil
+	})
+	return a.indexer
+}
+
+// Index returns the skill index, waiting for it to be built or updated when
+// it is missing, stale, lacks configured repositories or refresh is set.
+func (a *App) Index(ctx context.Context, refresh bool, progress registry.Progress) (*registry.Index, error) {
+	return a.Indexer().Wait(ctx, refresh, progress)
 }
 
 // Load fetches a source and discovers its skills.

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -86,6 +87,32 @@ type Index struct {
 	BuiltAt time.Time         `json:"built_at"`
 	Entries []Entry           `json:"entries"`
 	Errors  map[string]string `json:"errors,omitempty"`
+	// Scanned records when each repository was last indexed, successfully
+	// or not, so new repositories can be indexed without a full rebuild. It
+	// is keyed by Repo.key, so changing a repository's ref re-indexes it.
+	Scanned map[string]time.Time `json:"scanned,omitempty"`
+}
+
+// key identifies what was indexed for a repository: its URL and ref.
+func (r Repo) key() string {
+	if r.Ref == "" {
+		return r.URL
+	}
+	return r.URL + "#" + r.Ref
+}
+
+// MarkScanned records repos as indexed at BuiltAt unless they already are.
+func (idx *Index) MarkScanned(repos ...Repo) {
+	for _, r := range repos {
+		if _, ok := idx.Scanned[r.key()]; !ok {
+			idx.Scanned[r.key()] = idx.BuiltAt
+		}
+	}
+}
+
+// NewIndex returns an empty index.
+func NewIndex() *Index {
+	return &Index{BuiltAt: time.Now().UTC(), Errors: map[string]string{}, Scanned: map[string]time.Time{}}
 }
 
 // Fetcher makes a source available on disk.
@@ -93,18 +120,36 @@ type Fetcher interface {
 	Fetch(ctx context.Context, src, ref string, refresh bool) (*source.Checkout, error)
 }
 
-// Progress is called after each repository was indexed.
-type Progress func(done, total int, repo Repo, err error)
+// Progress is called after each repository was indexed with the entries
+// found in it.
+type Progress func(done, total int, repo Repo, entries []Entry, err error)
+
+// buildConcurrency limits parallel fetches. Fetching is network-bound.
+const buildConcurrency = 8
 
 // Build indexes all repos concurrently. Failing repos are recorded in
-// Index.Errors and do not abort the build.
+// Index.Errors and do not abort the build. Progress calls are serialized.
 func Build(ctx context.Context, f Fetcher, repos []Repo, refresh bool, progress Progress) *Index {
-	idx := &Index{BuiltAt: time.Now().UTC(), Errors: map[string]string{}}
+	idx := NewIndex()
+	done := 0
+	scanAll(ctx, f, repos, refresh, func(r Repo, entries []Entry, err error) {
+		done++
+		idx.merge(r, entries, err)
+		if progress != nil {
+			progress(done, len(repos), r, entries, err)
+		}
+	})
+	idx.sort()
+	return idx
+}
+
+// scanAll scans repos with limited concurrency and calls fn for each result.
+// Calls to fn are serialized.
+func scanAll(ctx context.Context, f Fetcher, repos []Repo, refresh bool, fn func(Repo, []Entry, error)) {
 	var (
-		mu   sync.Mutex
-		wg   sync.WaitGroup
-		done int
-		sem  = make(chan struct{}, 4)
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, buildConcurrency)
 	)
 	for _, r := range repos {
 		wg.Go(func() {
@@ -113,20 +158,10 @@ func Build(ctx context.Context, f Fetcher, repos []Repo, refresh bool, progress 
 			entries, err := Scan(ctx, f, r, refresh)
 			mu.Lock()
 			defer mu.Unlock()
-			done++
-			if err != nil {
-				idx.Errors[r.URL] = err.Error()
-			} else {
-				idx.Entries = append(idx.Entries, entries...)
-			}
-			if progress != nil {
-				progress(done, len(repos), r, err)
-			}
+			fn(r, entries, err)
 		})
 	}
 	wg.Wait()
-	idx.sort()
-	return idx
 }
 
 // Scan fetches a single repository and lists its skills.
@@ -144,6 +179,95 @@ func Scan(ctx context.Context, f Fetcher, r Repo, refresh bool) ([]Entry, error)
 		entries = append(entries, Entry{Name: s.Name, Description: s.Description, Version: s.Version, Path: s.Path, Repo: r})
 	}
 	return entries, nil
+}
+
+// Merge returns a copy of idx with the result of indexing r. On success the
+// repository's entries are replaced; on failure its previous entries are kept
+// and the error is recorded.
+func (idx *Index) Merge(r Repo, entries []Entry, err error) *Index {
+	out := idx.Clone()
+	out.merge(r, entries, err)
+	out.sort()
+	return out
+}
+
+func (idx *Index) merge(r Repo, entries []Entry, err error) {
+	idx.Scanned[r.key()] = time.Now().UTC()
+	if err != nil {
+		idx.Errors[r.URL] = err.Error()
+		return
+	}
+	delete(idx.Errors, r.URL)
+	idx.Entries = slices.DeleteFunc(idx.Entries, func(e Entry) bool { return e.Repo.URL == r.URL })
+	idx.Entries = append(idx.Entries, entries...)
+}
+
+// Clone returns a deep copy of idx.
+func (idx *Index) Clone() *Index {
+	out := &Index{BuiltAt: idx.BuiltAt, Entries: slices.Clone(idx.Entries), Errors: maps.Clone(idx.Errors), Scanned: maps.Clone(idx.Scanned)}
+	if out.Errors == nil {
+		out.Errors = map[string]string{}
+	}
+	if out.Scanned == nil {
+		out.Scanned = map[string]time.Time{}
+	}
+	return out
+}
+
+// Retain returns a copy of idx without entries and errors of repositories
+// that are no longer in repos, or idx itself when nothing is dropped.
+func (idx *Index) Retain(repos []Repo) *Index {
+	keep, keepKey := map[string]bool{}, map[string]bool{}
+	for _, r := range repos {
+		keep[r.URL], keepKey[r.key()] = true, true
+	}
+	if !idx.hasOther(keep, keepKey) {
+		return idx // nothing to drop: avoid copying
+	}
+	out := idx.Clone()
+	out.Entries = slices.DeleteFunc(out.Entries, func(e Entry) bool { return !keep[e.Repo.URL] })
+	maps.DeleteFunc(out.Errors, func(u, _ string) bool { return !keep[u] })
+	maps.DeleteFunc(out.Scanned, func(k string, _ time.Time) bool { return !keepKey[k] })
+	return out
+}
+
+// hasOther reports whether idx holds anything outside keep (by URL) and
+// keepKey (by Repo.key).
+func (idx *Index) hasOther(keep, keepKey map[string]bool) bool {
+	for _, e := range idx.Entries {
+		if !keep[e.Repo.URL] {
+			return true
+		}
+	}
+	for u := range idx.Errors {
+		if !keep[u] {
+			return true
+		}
+	}
+	for k := range idx.Scanned {
+		if !keepKey[k] {
+			return true
+		}
+	}
+	return false
+}
+
+// ErrorRetry is how long a repository that failed to index is skipped
+// before Missing reports it again.
+const ErrorRetry = time.Hour
+
+// Missing returns the repos that were never indexed, or that failed longer
+// than ErrorRetry ago.
+func (idx *Index) Missing(repos []Repo) []Repo {
+	var out []Repo
+	for _, r := range repos {
+		at, ok := idx.Scanned[r.key()]
+		_, failed := idx.Errors[r.URL]
+		if !ok || failed && time.Since(at) > ErrorRetry {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (idx *Index) sort() {
@@ -203,27 +327,38 @@ const DefaultTTL = 24 * time.Hour
 // IndexPath returns where the index cache is stored.
 func IndexPath(cacheDir string) string { return filepath.Join(cacheDir, "index.json") }
 
-// LoadIndex reads a cached index. It returns (nil, nil) when no cache exists
-// or it is older than ttl.
-func LoadIndex(p string, ttl time.Duration) (*Index, error) {
+// LoadIndexAny reads a cached index regardless of its age and reports whether
+// it is younger than ttl. It returns a nil index when no usable cache exists.
+func LoadIndexAny(p string, ttl time.Duration) (idx *Index, fresh bool, err error) {
 	data, err := os.ReadFile(p)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	var idx Index
-	if err := json.Unmarshal(data, &idx); err != nil {
-		return nil, nil // corrupt cache: rebuild
+	idx = &Index{}
+	if err := json.Unmarshal(data, idx); err != nil {
+		return nil, false, nil // corrupt cache: rebuild
 	}
-	if ttl > 0 && time.Since(idx.BuiltAt) > ttl {
-		return nil, nil
+	if idx.Errors == nil {
+		idx.Errors = map[string]string{}
 	}
-	return &idx, nil
+	if idx.Scanned == nil {
+		// Caches written before Scanned existed: treat every repository
+		// with entries or errors as indexed at build time.
+		idx.Scanned = map[string]time.Time{}
+		for _, e := range idx.Entries {
+			idx.Scanned[e.Repo.key()] = idx.BuiltAt
+		}
+		for u := range idx.Errors {
+			idx.Scanned[u] = idx.BuiltAt
+		}
+	}
+	return idx, ttl <= 0 || time.Since(idx.BuiltAt) <= ttl, nil
 }
 
-// Save writes the index cache.
+// Save writes the index cache atomically.
 func (idx *Index) Save(p string) error {
 	data, err := json.Marshal(idx)
 	if err != nil {
@@ -232,5 +367,21 @@ func (idx *Index) Save(p string) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(p, data, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".index-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), p)
 }

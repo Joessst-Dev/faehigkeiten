@@ -121,7 +121,9 @@ var _ = Describe("CLI", func() {
 
 	Describe("adopt", func() {
 		BeforeEach(func() {
-			Expect(testutil.SeedIndex(filepath.Join(filepath.Dir(cfgDir), "cache"),
+			cfg, err := config.Load()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(testutil.SeedIndex(cfg, filepath.Join(filepath.Dir(cfgDir), "cache"),
 				registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
 		})
 

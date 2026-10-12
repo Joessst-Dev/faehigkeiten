@@ -1,8 +1,11 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -156,10 +159,8 @@ func shortCommit(co *source.Checkout) string {
 // ---- search ----
 
 type (
-	indexLoadedMsg struct {
-		idx *registry.Index
-		err error
-	}
+	// indexTickMsg polls the background indexer while it builds.
+	indexTickMsg     struct{}
 	remoteResultsMsg struct {
 		query string
 		hits  []registry.RemoteSkill
@@ -174,6 +175,9 @@ type searchScreen struct {
 	spin    spinner.Model
 	loading bool
 	idx     *registry.Index
+	ist     registry.IndexStatus
+	idxErr  error // from the last index build; err is for remote search
+	polling bool
 	remote  bool
 	lastQ   string
 	err     error
@@ -202,13 +206,43 @@ func (s *searchScreen) Init() tea.Cmd {
 	return tea.Batch(s.input.Focus(), s.loadIndex(false))
 }
 
+// loadIndex starts the background indexer and shows its results as they
+// arrive.
 func (s *searchScreen) loadIndex(refresh bool) tea.Cmd {
-	s.loading, s.err = true, nil
-	e := s.env
-	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
-		idx, err := e.app.Index(e.ctx, refresh, nil)
-		return indexLoadedMsg{idx, err}
-	}))
+	s.env.app.Indexer().Start(s.env.ctx, refresh, nil)
+	return s.syncIndex(true)
+}
+
+// syncIndex picks up the indexer's current state (always when force is set,
+// otherwise only when it changed) and keeps one polling loop running while
+// it builds.
+func (s *searchScreen) syncIndex(force bool) tea.Cmd {
+	idx, st := s.env.app.Indexer().Snapshot()
+	if !force && !st.Building && st.Gen != s.ist.Gen && errors.Is(st.Err, context.Canceled) && s.env.ctx.Err() == nil {
+		// Another caller cancelled the shared build (e.g. it left its
+		// screen); finish it for this screen.
+		s.env.app.Indexer().Start(s.env.ctx, false, nil)
+		idx, st = s.env.app.Indexer().Snapshot()
+	}
+	if force || st.Gen != s.ist.Gen {
+		s.idx, s.idxErr = idx, nil
+		if st.Err != nil && !errors.Is(st.Err, context.Canceled) {
+			s.idxErr = st.Err
+		}
+		if !s.remote {
+			s.refreshLocal()
+		}
+	}
+	s.ist = st
+	if !st.Building || s.polling {
+		return nil
+	}
+	s.polling = true
+	poll := tea.Tick(150*time.Millisecond, func(time.Time) tea.Msg { return routed{to: s, msg: indexTickMsg{}} })
+	if s.loading {
+		return poll // the spinner is already ticking
+	}
+	return tea.Batch(poll, s.spin.Tick)
 }
 
 func (s *searchScreen) searchRemote() tea.Cmd {
@@ -216,9 +250,13 @@ func (s *searchScreen) searchRemote() tea.Cmd {
 	if q == "" {
 		return nil
 	}
+	var spin tea.Cmd
+	if !s.loading && !s.ist.Building {
+		spin = s.spin.Tick // otherwise the spinner is already ticking
+	}
 	s.lastQ, s.loading, s.err = q, true, nil
 	e := s.env
-	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+	return tea.Batch(spin, async(s, func() tea.Msg {
 		hits, err := e.app.Remote.Search(e.ctx, q, 50)
 		return remoteResultsMsg{q, hits, err}
 	}))
@@ -242,19 +280,15 @@ func (s *searchScreen) refreshLocal() {
 func (s *searchScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if !s.loading {
+		if !s.loading && !s.ist.Building {
 			return nil
 		}
 		var cmd tea.Cmd
 		s.spin, cmd = s.spin.Update(msg)
 		return cmd
-	case indexLoadedMsg:
-		s.loading = false
-		s.idx, s.err = msg.idx, msg.err
-		if !s.remote {
-			s.refreshLocal()
-		}
-		return nil
+	case indexTickMsg:
+		s.polling = false
+		return s.syncIndex(false)
 	case remoteResultsMsg:
 		s.loading = false
 		if !s.remote {
@@ -326,13 +360,16 @@ func (s *searchScreen) View() string {
 	}
 	v := s.input.View() + "\n" + subtleStyle.Render("searching "+mode) + "\n\n"
 	switch {
-	case s.loading && s.idx == nil && !s.remote:
-		return v + s.spin.View() + fmt.Sprintf(" indexing %d repositories (first run can take a minute) …", len(s.env.app.Repos()))
 	case s.loading:
 		v += s.spin.View() + " searching …\n"
+	case s.ist.Building && !s.remote:
+		v += s.spin.View() + fmt.Sprintf(" indexing repositories %d/%d …\n", s.ist.Done, s.ist.Total)
 	}
 	if s.err != nil {
 		v += errStyle.Render(s.err.Error()) + "\n"
+	}
+	if s.idxErr != nil && !s.remote {
+		v += errStyle.Render(s.idxErr.Error()) + "\n"
 	}
 	if s.idx != nil && !s.remote && len(s.idx.Errors) > 0 {
 		v += warnStyle.Render(fmt.Sprintf("%d repositories could not be indexed", len(s.idx.Errors))) + "\n"

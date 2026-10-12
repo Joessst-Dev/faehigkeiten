@@ -416,7 +416,7 @@ func newSearchCommand() *cobra.Command {
 				}
 				return tw.Flush()
 			}
-			idx, err := a.Index(cmd.Context(), refresh, func(done, total int, r registry.Repo, err error) {
+			idx, err := a.Index(cmd.Context(), refresh, func(done, total int, r registry.Repo, _ []registry.Entry, err error) {
 				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "[%d/%d] %s: %v\n", done, total, r.Name, err)
 				}
