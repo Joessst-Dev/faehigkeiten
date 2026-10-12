@@ -26,9 +26,7 @@ type Indexer struct {
 	Fetcher Fetcher
 	// Path is where the index is cached.
 	Path string
-	// Repos returns the repositories to index. Start and Wait call it on
-	// the caller's goroutine; callers that may not read the state it looks
-	// at use WaitRepos with their own copy.
+	// Repos returns the repositories to index.
 	Repos func() []Repo
 	// TTL is how long a cached index is fresh. Stale indexes are still
 	// served while they are rebuilt.
@@ -101,11 +99,11 @@ func (q *indexRequest) report(done, total int, r Repo, entries []Entry, err erro
 // index is complete. progress, if not nil, is called for each repository
 // indexed for this request.
 func (x *Indexer) Start(ctx context.Context, refresh bool, progress Progress) <-chan struct{} {
-	return x.start(ctx, x.Repos(), refresh, progress).done
+	return x.start(ctx, refresh, progress).done
 }
 
-func (x *Indexer) start(ctx context.Context, repos []Repo, refresh bool, progress Progress) *indexRun {
-	req := &indexRequest{ctxs: []context.Context{ctx}, refresh: refresh, repos: repos}
+func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *indexRun {
+	req := &indexRequest{ctxs: []context.Context{ctx}, refresh: refresh, repos: x.Repos()}
 	if progress != nil {
 		req.progress = []Progress{progress}
 	}
@@ -244,14 +242,8 @@ func (x *Indexer) Snapshot() (*Index, IndexStatus) {
 
 // Wait starts the indexer if needed and blocks until the index is complete.
 func (x *Indexer) Wait(ctx context.Context, refresh bool, progress Progress) (*Index, error) {
-	return x.WaitRepos(ctx, x.Repos(), refresh, progress)
-}
-
-// WaitRepos is Wait for the given repositories instead of those returned by
-// Repos, for callers that may not read the state Repos looks at.
-func (x *Indexer) WaitRepos(ctx context.Context, repos []Repo, refresh bool, progress Progress) (*Index, error) {
 	for {
-		r := x.start(ctx, repos, refresh, progress)
+		r := x.start(ctx, refresh, progress)
 		select {
 		case <-r.done:
 		case <-ctx.Done():

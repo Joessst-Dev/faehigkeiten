@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -313,24 +314,31 @@ var _ = Describe("TUI", func() {
 			// while this goroutine changes the configuration as the UI
 			// does. Under -race this fails if a lookup reads Config.
 			lookup := func(s screen) tea.Msg {
-				cmds := tea.Batch(s.Init())().(tea.BatchMsg)
-				got := make(chan tea.Msg, 1)
-				go func() {
-					defer GinkgoRecover()
-					for _, c := range cmds {
-						if c == nil {
-							continue
-						}
+				cmds := tea.BatchMsg{s.Init()}
+				if b, ok := cmds[0]().(tea.BatchMsg); ok {
+					cmds = b
+				}
+				// Run every command at once so the spinner tick does not
+				// delay the lookup; the routed message is its result.
+				got := make(chan tea.Msg, len(cmds))
+				for _, c := range cmds {
+					if c == nil {
+						continue
+					}
+					go func() {
+						defer GinkgoRecover()
 						if r, ok := c().(routed); ok {
 							got <- r.msg
-							return
 						}
-					}
-				}()
+					}()
+				}
+				timeout := time.After(time.Minute)
 				for {
 					select {
 					case msg := <-got:
 						return msg
+					case <-timeout:
+						Fail("the lookup did not finish")
 					default:
 						a.Config.AddRepo(config.Repo{URL: "https://example.com/other"})
 						a.Config.RemoveRepo("https://example.com/other")

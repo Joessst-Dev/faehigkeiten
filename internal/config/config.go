@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -37,9 +38,13 @@ type AgentOverride struct {
 
 // Config is the persisted user configuration.
 type Config struct {
+	// Repos may be changed while background tasks read it: use AddRepo,
+	// RemoveRepo and RepoList once the config is shared.
 	Repos         []Repo                   `yaml:"repos,omitempty"`
 	DefaultAgents []string                 `yaml:"default_agents,omitempty"`
 	Agents        map[string]AgentOverride `yaml:"agents,omitempty"`
+
+	mu sync.Mutex // guards Repos
 }
 
 // Dir returns the configuration directory.
@@ -111,7 +116,9 @@ func (c *Config) Save() error {
 
 // SaveFile writes the config to p.
 func (c *Config) SaveFile(p string) error {
+	c.mu.Lock()
 	data, err := marshal(c)
+	c.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -123,6 +130,8 @@ func (c *Config) SaveFile(p string) error {
 
 // AddRepo adds r unless a repo with the same URL exists. It reports whether r was added.
 func (c *Config) AddRepo(r Repo) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if slices.ContainsFunc(c.Repos, func(x Repo) bool { return x.URL == r.URL }) {
 		return false
 	}
@@ -132,9 +141,19 @@ func (c *Config) AddRepo(r Repo) bool {
 
 // RemoveRepo removes the repo with the given URL and reports whether it existed.
 func (c *Config) RemoveRepo(url string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	n := len(c.Repos)
 	c.Repos = slices.DeleteFunc(c.Repos, func(x Repo) bool { return x.URL == url })
 	return len(c.Repos) != n
+}
+
+// RepoList returns a copy of the user's repositories. Unlike Repos, it may be
+// called while another goroutine adds or removes one.
+func (c *Config) RepoList() []Repo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.Repos)
 }
 
 func marshal(v any) ([]byte, error) {

@@ -103,7 +103,8 @@ func (a *App) DefaultAgents(t install.Target) []string {
 	return []string{"claude-code"}
 }
 
-// Repos returns user and builtin repositories.
+// Repos returns user and builtin repositories. It is safe to call from
+// background tasks while the configuration's repositories change.
 func (a *App) Repos() []registry.Repo { return registry.Repos(a.Config) }
 
 // Indexer returns the shared background indexer.
@@ -210,11 +211,9 @@ type Candidate struct {
 
 // Candidates looks up skills with the same name as f in the known
 // repositories. Identical copies come first, then repositories in registry
-// order (user repositories, then by popularity). repos is the list returned by
-// Repos; callers off the goroutine that owns Config read it there and pass it
-// in.
-func (a *App) Candidates(ctx context.Context, f install.Found, repos []registry.Repo) ([]Candidate, error) {
-	idx, err := a.Indexer().WaitRepos(ctx, repos, false, nil)
+// order (user repositories, then by popularity).
+func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, error) {
+	idx, err := a.Index(ctx, false, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -223,8 +222,15 @@ func (a *App) Candidates(ctx context.Context, f install.Found, repos []registry.
 		return nil, err
 	}
 	order := map[string]int{}
-	for i, r := range repos {
+	for i, r := range a.Repos() {
 		order[r.URL] = i
+	}
+	// Repositories removed while the index was built sort last.
+	rank := func(url string) int {
+		if i, ok := order[url]; ok {
+			return i
+		}
+		return len(order)
 	}
 	var out []Candidate
 	for _, e := range idx.Entries {
@@ -245,7 +251,7 @@ func (a *App) Candidates(ctx context.Context, f install.Found, repos []registry.
 		if out[i].Identical != out[j].Identical {
 			return out[i].Identical
 		}
-		return order[out[i].Entry.Repo.URL] < order[out[j].Entry.Repo.URL]
+		return rank(out[i].Entry.Repo.URL) < rank(out[j].Entry.Repo.URL)
 	})
 	return out, nil
 }
@@ -263,10 +269,6 @@ type AdoptOptions struct {
 	// the only skill with that name is accepted even if it differs. Use it when
 	// the user has not looked at each skill.
 	IdenticalOnly bool
-	// Repos are the repositories searched without From; nil means Repos(),
-	// which only the goroutine that owns Config may call. Callers on other
-	// goroutines must set it.
-	Repos []registry.Repo
 }
 
 // NoSourceError reports that no source could be chosen automatically.
@@ -293,12 +295,8 @@ func (a *App) ResolveAdopt(ctx context.Context, f install.Found, opts AdoptOptio
 	src, ref, p := opts.From, opts.Ref, opts.Path
 	var cands []Candidate
 	if src == "" {
-		repos := opts.Repos
-		if repos == nil {
-			repos = a.Repos()
-		}
 		var err error
-		cands, err = a.Candidates(ctx, f, repos)
+		cands, err = a.Candidates(ctx, f)
 		if err != nil {
 			return install.AdoptRequest{}, err
 		}

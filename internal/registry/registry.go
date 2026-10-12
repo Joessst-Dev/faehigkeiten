@@ -56,7 +56,7 @@ func Repos(cfg *config.Config) []Repo {
 	var out []Repo
 	seen := map[string]bool{}
 	if cfg != nil {
-		for _, r := range cfg.Repos {
+		for _, r := range cfg.RepoList() {
 			name := r.Name
 			if name == "" {
 				name = source.DisplayName(r.URL)

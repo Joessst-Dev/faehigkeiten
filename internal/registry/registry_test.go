@@ -248,18 +248,6 @@ var _ = Describe("Indexer", func() {
 		Expect(f.count()).To(Equal(map[string]int{"https://x/a": 1, "https://x/b": 1, "https://x/c": 1}))
 	})
 
-	It("waits for the given repositories without calling Repos", func() {
-		x.Repos = func() []registry.Repo {
-			Fail("WaitRepos must not call Repos")
-			return nil
-		}
-		idx, err := x.WaitRepos(context.Background(), repos[:1], false, nil)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(idx.Entries).To(HaveLen(1))
-		Expect(idx.Entries[0].Name).To(Equal("pdf"))
-		Expect(f.count()).To(Equal(map[string]int{"https://x/a": 1}))
-	})
-
 	It("serves requests made during a build before completing it", func() {
 		f.gate, f.gateURL = make(chan struct{}), "https://x/b"
 		done := x.Start(context.Background(), false, nil)
