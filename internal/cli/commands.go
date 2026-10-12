@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -692,10 +693,21 @@ func adoptHint(err error, scope string) error {
 	return errors.New(b.String())
 }
 
-var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_./:@~+=,-]+$`)
+var (
+	shellSafe   = regexp.MustCompile(`^[A-Za-z0-9_./:@~+=,-]+$`)
+	windowsSafe = regexp.MustCompile(`^[A-Za-z0-9_./\\:@~+=,-]+$`)
+)
 
-// shellQuote quotes s for a POSIX shell when it contains other characters.
+// shellQuote quotes s for the user's shell when it contains other characters:
+// single quotes for POSIX shells, double quotes (understood by cmd.exe and
+// PowerShell) on Windows, where backslashes are path separators.
 func shellQuote(s string) string {
+	if runtime.GOOS == "windows" {
+		if windowsSafe.MatchString(s) {
+			return s
+		}
+		return `"` + s + `"`
+	}
 	if shellSafe.MatchString(s) {
 		return s
 	}
