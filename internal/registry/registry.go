@@ -108,20 +108,16 @@ func (r Repo) key() string {
 	return r.URL + "#" + r.Ref
 }
 
-// MarkScanned returns a copy of idx that records repos as indexed at BuiltAt
+// WithScanned returns a copy of idx that records repos as indexed at BuiltAt
 // unless they already are. idx is not modified.
-func (idx *Index) MarkScanned(repos ...Repo) *Index {
+func (idx *Index) WithScanned(repos ...Repo) *Index {
 	out := idx.Clone()
-	out.markScanned(repos)
-	return out
-}
-
-func (idx *Index) markScanned(repos []Repo) {
 	for _, r := range repos {
-		if _, ok := idx.Scanned[r.key()]; !ok {
-			idx.Scanned[r.key()] = idx.BuiltAt
+		if _, ok := out.Scanned[r.key()]; !ok {
+			out.Scanned[r.key()] = out.BuiltAt
 		}
 	}
+	return out
 }
 
 // finishLegacy completes the conversion of a cache written before Scanned
@@ -132,11 +128,12 @@ func (idx *Index) markScanned(repos []Repo) {
 // been added after the cache was built. So are repositories whose entries came
 // from another ref.
 func (idx *Index) finishLegacy(repos []Repo) {
+	indexed := map[string]bool{}
+	for _, e := range idx.Entries {
+		indexed[e.Repo.URL] = true
+	}
 	for _, r := range repos {
-		if _, failed := idx.Errors[r.URL]; !failed {
-			continue
-		}
-		if slices.ContainsFunc(idx.Entries, func(e Entry) bool { return e.Repo.URL == r.URL }) {
+		if _, failed := idx.Errors[r.URL]; !failed || indexed[r.URL] {
 			continue
 		}
 		if _, ok := idx.Scanned[r.key()]; !ok {

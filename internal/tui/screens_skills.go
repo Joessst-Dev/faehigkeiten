@@ -362,7 +362,7 @@ func (s *searchScreen) View() string {
 	switch {
 	case s.loading:
 		v += s.spin.View() + " searching …\n"
-	case s.ist.Building && !s.remote:
+	case s.ist.Building && s.ist.Total > 0 && !s.remote:
 		v += s.spin.View() + fmt.Sprintf(" indexing repositories %d/%d …\n", s.ist.Done, s.ist.Total)
 	}
 	if s.err != nil {

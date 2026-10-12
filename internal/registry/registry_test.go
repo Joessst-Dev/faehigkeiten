@@ -165,7 +165,7 @@ var _ = Describe("Index", func() {
 	It("marks repositories as scanned without touching the original", func() {
 		idx := registry.Build(context.Background(), f, repos[:1], false, nil)
 		extra := registry.Repo{Name: "c", URL: "https://x/c", Ref: "v1"}
-		marked := idx.MarkScanned(extra)
+		marked := idx.WithScanned(extra)
 		Expect(idx.Scanned).NotTo(HaveKey("https://x/c#v1"))
 		Expect(marked.Scanned).To(HaveKeyWithValue("https://x/c#v1", idx.BuiltAt))
 		Expect(marked.Scanned).To(HaveKeyWithValue("https://x/a", idx.Scanned["https://x/a"]))
@@ -389,6 +389,46 @@ var _ = Describe("Indexer", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(cached.Entries).To(HaveLen(1), "the trimmed index is saved")
 		Expect(cached.Scanned).NotTo(HaveKey("https://x/b"))
+	})
+
+	It("does not fail when only saving a trimmed index fails", func() {
+		_, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		dir := filepath.Dir(x.Path)
+		Expect(os.RemoveAll(dir)).To(Succeed())
+		Expect(os.WriteFile(dir, nil, 0o644)).To(Succeed(), "saving into it fails")
+
+		repos = repos[:1]
+		idx, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(idx.Entries).To(HaveLen(1))
+	})
+
+	It("keeps a cancellation when a queued request only drops repositories", func() {
+		_, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		c := GinkgoT().TempDir()
+		Expect(testutil.WriteFiles(c, map[string]string{"go/SKILL.md": testutil.SkillMD("go", "Go", "")})).To(Succeed())
+		f.dirs["https://x/c"] = c
+		f.gate, f.gateURL = make(chan struct{}), "https://x/c"
+		repos = append(repos, registry.Repo{Name: "c", URL: "https://x/c"})
+		ctx, cancel := context.WithCancel(context.Background())
+		done := x.Start(ctx, false, nil)
+		Eventually(func() int { return f.count()["https://x/c"] }).Should(Equal(1))
+
+		repos = repos[:1] // drops b, which is indexed, and c
+		x.Start(context.Background(), false, nil)
+		cancel()
+		Eventually(done).Should(BeClosed())
+		_, st := x.Snapshot()
+		Expect(st.Err).To(MatchError(context.Canceled), "saving does not hide the cancelled round")
+
+		cached, _, err := registry.LoadIndexAny(x.Path, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cached.Entries).To(HaveLen(1), "the trimmed index is saved")
+		idx, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(idx.Entries).To(HaveLen(1))
 	})
 
 	It("saves an index trimmed by a request queued during a build", func() {
