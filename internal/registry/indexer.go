@@ -119,37 +119,34 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 	if !loaded {
 		cached, _, _ = LoadIndexAny(x.Path, x.TTL)
 	}
-	upgraded := cached != nil && cached.legacy
-	if upgraded {
-		// Old caches came from full builds, so every configured repository
-		// was indexed then, except ones added since; those are picked up by
-		// the next full build. cached is not published yet.
-		cached.markScanned(req.repos)
-		cached.legacy = false
-	}
 
 	x.mu.Lock()
+	defer x.mu.Unlock()
 	if r := x.run; r != nil {
 		if r.queued == nil {
 			r.queued = req
 		} else {
 			r.queued.add(req)
 		}
-		x.mu.Unlock()
 		return r
 	}
 	before := x.idx
+	upgraded := false
 	if x.idx == nil {
 		if cached != nil {
+			if cached.legacy {
+				// cached is not published yet, so it may still change.
+				cached.finishLegacy(req.repos)
+				upgraded = true
+			}
 			x.idx = cached
 		} else {
 			x.idx = NewIndex()
 			x.idx.BuiltAt = time.Time{} // never built: stale
 		}
 	}
-	planned := x.idx
-	todo, full := x.plan(req)
-	if len(todo) == 0 {
+	todo, full, dropped := x.plan(req)
+	if len(todo) == 0 && !dropped && !upgraded {
 		// Only signal a change when there is one, so pollers do not redo
 		// their work for nothing.
 		if x.idx != before || x.st.Err != nil {
@@ -157,33 +154,29 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 		}
 		r := &indexRun{done: make(chan struct{}), idx: x.idx}
 		close(r.done)
-		changed := x.idx != planned || upgraded && planned == cached
-		x.mu.Unlock()
-		if changed {
-			// Removed repositories were dropped or an old cache was
-			// converted, and no build will save it. The cache is
-			// best-effort.
-			_ = x.save()
-		}
 		return r
 	}
 	r := &indexRun{done: make(chan struct{})}
 	x.run = r
-	x.begin(len(todo))
-	x.mu.Unlock()
+	if len(todo) > 0 {
+		x.begin(len(todo))
+	}
 	go x.build(r, req, todo, full)
 	return r
 }
 
 // plan drops removed repositories and returns the ones to index. full is set
-// when all of them are indexed and the result is stamped as freshly built.
-// x.mu must be held.
-func (x *Indexer) plan(req *indexRequest) (todo []Repo, full bool) {
+// when all of them are indexed and the result is stamped as freshly built;
+// dropped is set when repositories were removed from the index. x.mu must be
+// held.
+func (x *Indexer) plan(req *indexRequest) (todo []Repo, full, dropped bool) {
+	prev := x.idx
 	x.idx = x.idx.Retain(req.repos)
+	dropped = x.idx != prev
 	if req.refresh || x.TTL > 0 && time.Since(x.idx.BuiltAt) > x.TTL {
-		return req.repos, true
+		return req.repos, true, dropped
 	}
-	return x.idx.Missing(req.repos), false
+	return x.idx.Missing(req.repos), false, dropped
 }
 
 // begin resets the status for a build of n repositories. x.mu must be held.
@@ -191,27 +184,30 @@ func (x *Indexer) begin(n int) {
 	x.st = IndexStatus{Building: true, Total: n, Gen: x.st.Gen + 1}
 }
 
+// build indexes todo and serves the requests queued meanwhile. With nothing
+// to index, a round only saves the index, which changed without a build:
+// repositories were dropped or an old cache was converted.
 func (x *Indexer) build(r *indexRun, req *indexRequest, todo []Repo, full bool) {
 	for {
-		err := x.buildOnce(req, todo, full)
+		var err error
+		if len(todo) > 0 {
+			err = x.buildOnce(req, todo, full)
+		} else {
+			err = x.save()
+		}
 
 		x.mu.Lock()
 		if r.queued != nil {
 			// Serve requests made during this build: they may want a
 			// re-fetch or know about repositories added since it began.
 			req, r.queued = r.queued, nil
-			planned := x.idx
-			if todo, full = x.plan(req); len(todo) > 0 {
-				x.begin(len(todo))
+			var dropped bool
+			if todo, full, dropped = x.plan(req); len(todo) > 0 || dropped {
+				if len(todo) > 0 {
+					x.begin(len(todo))
+				}
 				x.mu.Unlock()
 				continue
-			}
-			if x.idx != planned && err == nil {
-				// Repositories were dropped after the build saved. x.run
-				// is still set, so no other build starts meanwhile.
-				x.mu.Unlock()
-				err = x.save()
-				x.mu.Lock()
 			}
 		}
 		x.st.Building, x.st.Err = false, err

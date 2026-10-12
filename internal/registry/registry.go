@@ -95,8 +95,8 @@ type Index struct {
 	// is keyed by Repo.key, so changing a repository's ref re-indexes it.
 	Scanned map[string]time.Time `json:"scanned,omitempty"`
 
-	// legacy is set on caches written before Scanned existed. Only the
-	// repositories with entries are known to be indexed; see Indexer.start.
+	// legacy is set on caches written before Scanned existed until
+	// finishLegacy has run.
 	legacy bool
 }
 
@@ -122,6 +122,28 @@ func (idx *Index) markScanned(repos []Repo) {
 			idx.Scanned[r.key()] = idx.BuiltAt
 		}
 	}
+}
+
+// finishLegacy completes the conversion of a cache written before Scanned
+// existed. LoadIndexAny marked the repositories with entries; failures were
+// recorded by URL only, so each configured repository that failed is marked
+// under its current ref, to be retried after ErrorRetry like any failure.
+// Repositories with neither are left unmarked and indexed once: they may have
+// been added after the cache was built. So are repositories whose entries came
+// from another ref.
+func (idx *Index) finishLegacy(repos []Repo) {
+	for _, r := range repos {
+		if _, failed := idx.Errors[r.URL]; !failed {
+			continue
+		}
+		if slices.ContainsFunc(idx.Entries, func(e Entry) bool { return e.Repo.URL == r.URL }) {
+			continue
+		}
+		if _, ok := idx.Scanned[r.key()]; !ok {
+			idx.Scanned[r.key()] = idx.BuiltAt
+		}
+	}
+	idx.legacy = false
 }
 
 // NewIndex returns an empty index.
@@ -361,8 +383,8 @@ func LoadIndexAny(p string, ttl time.Duration) (idx *Index, fresh bool, err erro
 	if idx.Scanned == nil {
 		// Caches written before Scanned existed: repositories with entries
 		// were indexed at build time. Errors are keyed by URL without the
-		// ref, and repositories without skills left no trace, so the
-		// Indexer fills in the rest from the configured repositories.
+		// ref, so the Indexer marks failed repositories once it knows the
+		// configured refs; see finishLegacy.
 		idx.Scanned = map[string]time.Time{}
 		idx.legacy = true
 		for _, e := range idx.Entries {

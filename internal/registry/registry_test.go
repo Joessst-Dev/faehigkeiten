@@ -265,7 +265,7 @@ var _ = Describe("Indexer", func() {
 		Expect(f.count()).To(Equal(map[string]int{"https://x/a": 1, "https://x/b": 1, "https://x/c": 1}))
 	})
 
-	It("does not re-index repositories from a cache written before scan times were recorded", func() {
+	It("converts a cache written before scan times were recorded", func() {
 		pinned := registry.Repo{Name: "c", URL: "https://x/c", Ref: "v1"}
 		repos = append(repos, pinned)
 		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
@@ -274,7 +274,8 @@ var _ = Describe("Indexer", func() {
 
 		idx, err := x.Wait(context.Background(), false, nil)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(f.count()).To(BeEmpty(), "b had no skills and c failed at its pinned ref")
+		Expect(f.count()).To(Equal(map[string]int{"https://x/b": 1}),
+			"c failed at its pinned ref; b left no trace, so it may be new")
 		Expect(idx.Errors).To(HaveKey("https://x/c"))
 
 		cached, _, err := registry.LoadIndexAny(x.Path, time.Hour)
@@ -282,6 +283,34 @@ var _ = Describe("Indexer", func() {
 		Expect(cached.Scanned).To(HaveKey("https://x/a"))
 		Expect(cached.Scanned).To(HaveKey("https://x/b"))
 		Expect(cached.Scanned).To(HaveKey("https://x/c#v1"), "the converted cache is saved")
+	})
+
+	It("re-indexes a repository whose ref changed since an old cache was built", func() {
+		repos[0].Ref = "v2"
+		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}},{"name":"docx","path":"docx","repo":{"name":"b","url":"https://x/b"}}]}`
+		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
+
+		idx, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.count()).To(Equal(map[string]int{"https://x/a": 1}))
+		Expect(idx.Scanned).To(HaveKey("https://x/a#v2"))
+	})
+
+	It("saves a converted old cache in the background", func() {
+		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}},{"name":"docx","path":"docx","repo":{"name":"b","url":"https://x/b"}}]}`
+		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
+
+		done := x.Start(context.Background(), false, nil)
+		Eventually(done).Should(BeClosed())
+		Expect(f.count()).To(BeEmpty())
+		_, st := x.Snapshot()
+		Expect(st.Building).To(BeFalse())
+		Expect(st.Err).NotTo(HaveOccurred())
+		data, err := os.ReadFile(x.Path)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring(`"scanned"`))
 	})
 
 	It("serves requests made during a build before completing it", func() {
