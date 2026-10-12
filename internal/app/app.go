@@ -210,9 +210,11 @@ type Candidate struct {
 
 // Candidates looks up skills with the same name as f in the known
 // repositories. Identical copies come first, then repositories in registry
-// order (user repositories, then by popularity).
-func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, error) {
-	idx, err := a.Index(ctx, false, nil)
+// order (user repositories, then by popularity). repos is the list returned by
+// Repos; callers off the goroutine that owns Config read it there and pass it
+// in.
+func (a *App) Candidates(ctx context.Context, f install.Found, repos []registry.Repo) ([]Candidate, error) {
+	idx, err := a.Indexer().WaitRepos(ctx, repos, false, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -221,7 +223,7 @@ func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, err
 		return nil, err
 	}
 	order := map[string]int{}
-	for i, r := range a.Repos() {
+	for i, r := range repos {
 		order[r.URL] = i
 	}
 	var out []Candidate
@@ -261,6 +263,10 @@ type AdoptOptions struct {
 	// the only skill with that name is accepted even if it differs. Use it when
 	// the user has not looked at each skill.
 	IdenticalOnly bool
+	// Repos are the repositories searched without From; nil means Repos(),
+	// which only the goroutine that owns Config may call. Callers on other
+	// goroutines must set it.
+	Repos []registry.Repo
 }
 
 // NoSourceError reports that no source could be chosen automatically.
@@ -287,8 +293,12 @@ func (a *App) ResolveAdopt(ctx context.Context, f install.Found, opts AdoptOptio
 	src, ref, p := opts.From, opts.Ref, opts.Path
 	var cands []Candidate
 	if src == "" {
+		repos := opts.Repos
+		if repos == nil {
+			repos = a.Repos()
+		}
 		var err error
-		cands, err = a.Candidates(ctx, f)
+		cands, err = a.Candidates(ctx, f, repos)
 		if err != nil {
 			return install.AdoptRequest{}, err
 		}

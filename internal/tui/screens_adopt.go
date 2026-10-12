@@ -98,8 +98,10 @@ func (s *adoptScreen) Help() string {
 func (s *adoptScreen) Init() tea.Cmd {
 	s.step = adoptFinding
 	e, f := s.env, s.found
+	// Config belongs to the UI goroutine: read the repositories here.
+	repos := e.app.Repos()
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
-		cands, err := e.app.Candidates(e.ctx, f)
+		cands, err := e.app.Candidates(e.ctx, f, repos)
 		return candidatesMsg{cands, err}
 	}))
 }
@@ -429,6 +431,8 @@ func (s *adoptManyScreen) Init() tea.Cmd {
 	ctx, cancel := context.WithCancel(s.env.ctx)
 	s.cancel = cancel
 	a, found := s.env.app, s.found
+	// Config belongs to the UI goroutine: read the repositories here.
+	repos := a.Repos()
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
 		defer cancel()
 		plans := make([]adoptPlan, 0, len(found))
@@ -438,7 +442,7 @@ func (s *adoptManyScreen) Init() tea.Cmd {
 				return plansMsg{}
 			}
 			p := adoptPlan{req: install.AdoptRequest{Found: f}}
-			req, err := a.ResolveAdopt(ctx, f, app.AdoptOptions{IdenticalOnly: true})
+			req, err := a.ResolveAdopt(ctx, f, app.AdoptOptions{IdenticalOnly: true, Repos: repos})
 			if err != nil {
 				p.reason = err.Error()
 			} else {

@@ -303,6 +303,55 @@ var _ = Describe("TUI", func() {
 			Expect(string(data)).To(ContainSubstring("changed by hand"))
 		})
 
+		It("looks up sources while repositories are added or removed", func() {
+			in, err := a.Installer(d.m.env.target)
+			Expect(err).NotTo(HaveOccurred())
+			f, err := app.FindUnmanaged(in, "alpha")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Run each lookup like Bubble Tea would, on its own goroutine,
+			// while this goroutine changes the configuration as the UI
+			// does. Under -race this fails if a lookup reads Config.
+			lookup := func(s screen) tea.Msg {
+				cmds := tea.Batch(s.Init())().(tea.BatchMsg)
+				got := make(chan tea.Msg, 1)
+				go func() {
+					defer GinkgoRecover()
+					for _, c := range cmds {
+						if c == nil {
+							continue
+						}
+						if r, ok := c().(routed); ok {
+							got <- r.msg
+							return
+						}
+					}
+				}()
+				for {
+					select {
+					case msg := <-got:
+						return msg
+					default:
+						a.Config.AddRepo(config.Repo{URL: "https://example.com/other"})
+						a.Config.RemoveRepo("https://example.com/other")
+					}
+				}
+			}
+
+			msg := lookup(newAdoptScreen(d.m.env, in, f))
+			Expect(msg).To(BeAssignableToTypeOf(candidatesMsg{}))
+			cands := msg.(candidatesMsg)
+			Expect(cands.err).NotTo(HaveOccurred())
+			Expect(cands.cands).NotTo(BeEmpty())
+			Expect(cands.cands[0].Entry.Repo.Name).To(Equal("fixture/skills"))
+
+			msg = lookup(newAdoptManyScreen(d.m.env, in, []install.Found{f}))
+			Expect(msg).To(BeAssignableToTypeOf(plansMsg{}))
+			plans := msg.(plansMsg)
+			Expect(plans.plans).To(HaveLen(1))
+			Expect(plans.plans[0].resolved).To(BeTrue(), plans.plans[0].reason)
+		})
+
 		It("adopts several selected skills at once, choosing only identical sources", func() {
 			Expect(testutil.WriteFiles(project, map[string]string{
 				".claude/skills/mine/SKILL.md": testutil.SkillMD("mine", "", ""),
