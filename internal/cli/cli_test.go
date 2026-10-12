@@ -156,6 +156,36 @@ var _ = Describe("CLI", func() {
 			Expect(string(data)).To(ContainSubstring("Unversioned"))
 		})
 
+		It("checks every copy and skips copies of managed skills with --all", func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", "1.0.0"),
+				".agents/skills/alpha/SKILL.md": testutil.SkillMD("alpha", "edited for codex", "1.0.0"),
+			})).To(Succeed())
+			code, _, errOut := run("adopt", "--all", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("alpha differs from its only source"))
+
+			code, _, errOut = run("adopt", "alpha", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".gemini/skills/alpha/SKILL.md": testutil.SkillMD("alpha", "stray copy", ""),
+			})).To(Succeed())
+			code, _, errOut = run("adopt", "--all", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("no unmanaged skills"))
+			Expect(errOut).NotTo(ContainSubstring("skipping"))
+		})
+
+		It("returns the real error for a single named skill", func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", "1.0.0"),
+			})).To(Succeed())
+			code, _, errOut := run("adopt", "alpha", "--from", origin, "--path", "skills/nope", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring(`skill "skills/nope" not found`))
+			Expect(errOut).NotTo(ContainSubstring("could not be adopted"))
+		})
+
 		It("adopts local-only skills and explains unknown ones", func() {
 			Expect(testutil.WriteFiles(project, map[string]string{
 				".claude/skills/mine/SKILL.md": testutil.SkillMD("mine", "", ""),
@@ -169,6 +199,54 @@ var _ = Describe("CLI", func() {
 			code, _, errOut = run("adopt", "nope", "-p", project)
 			Expect(code).To(Equal(1))
 			Expect(errOut).To(ContainSubstring(`no unmanaged skill named "nope"`))
+		})
+
+		It("adopts all unmanaged skills, skipping the ones it cannot resolve", func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", "1.0.0"),
+				".claude/skills/beta/SKILL.md":  testutil.SkillMD("beta", "edited locally", ""),
+				".claude/skills/mine/SKILL.md":  testutil.SkillMD("mine", "", ""),
+			})).To(Succeed())
+			code, _, errOut := run("adopt", "alpha", "--all", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("--all"))
+
+			code, out, errOut := run("adopt", "--all", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(out).To(ContainSubstring("adopted alpha from origin"))
+			// beta differs from upstream: not adopted from it without being named
+			Expect(errOut).To(ContainSubstring("skipping beta: beta differs from its only source"))
+			Expect(errOut).To(ContainSubstring("faehigkeiten adopt beta --project " + project + " --from " + origin + " --path skills/beta"))
+			Expect(errOut).To(ContainSubstring("skipping mine"))
+			Expect(errOut).To(ContainSubstring("2 of 3 skill(s) could not be adopted"))
+
+			lf, err := lock.Load(filepath.Join(project, lock.FileName))
+			Expect(err).NotTo(HaveOccurred())
+			_, ok := lf.Get("alpha")
+			Expect(ok).To(BeTrue())
+			_, ok = lf.Get("beta")
+			Expect(ok).To(BeFalse())
+
+			Expect(errOut).To(ContainSubstring("faehigkeiten adopt beta --project " + project + " --local"))
+
+			code, _, errOut = run("adopt", "--all", "--ref", "main", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("--ref can only be used with --all together with --from"))
+
+			By("checking explicit sources too")
+			code, _, errOut = run("adopt", "--all", "--from", origin, "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("skipping beta: beta differs from its only source"))
+			_, ok = lf.Get("beta")
+			Expect(ok).To(BeFalse())
+
+			code, out, errOut = run("adopt", "beta", "beta", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("adopted beta from origin (hash "))
+
+			code, out, errOut = run("adopt", "--all", "--local", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("adopted mine (local only"))
 		})
 	})
 

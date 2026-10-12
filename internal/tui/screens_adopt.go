@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -172,7 +173,10 @@ func (s *adoptScreen) adopt(req install.AdoptRequest) tea.Cmd {
 	return async(s, func() tea.Msg {
 		e, err := in.Adopt(req)
 		if err == nil {
-			err = in.Lock.Save()
+			if err = in.Lock.Save(); err != nil {
+				// Undo, so that a later save does not record it anyway.
+				in.Lock.Remove(e.Name)
+			}
 		}
 		return adoptedMsg{e, err}
 	})
@@ -345,11 +349,7 @@ func (s *adoptScreen) View() string {
 		b.WriteString(s.list.View(s.env.bodyWidth(), h-5))
 	case adoptDone:
 		if s.err == nil {
-			if s.result.Source == "" {
-				fmt.Fprintf(&b, "%s %s is now managed (local only)", okStyle.Render("✓"), s.result.Name)
-			} else {
-				fmt.Fprintf(&b, "%s %s is now managed from %s (%s)", okStyle.Render("✓"), s.result.Name, source.DisplayName(s.result.Source), trackingLabel(s.result.Tracking))
-			}
+			b.WriteString(adoptedLine(s.result))
 		}
 	}
 	if s.err != nil {
@@ -357,4 +357,248 @@ func (s *adoptScreen) View() string {
 		b.WriteString(errStyle.Render(s.err.Error()))
 	}
 	return b.String()
+}
+
+// adoptedLine reports that e is now managed.
+func adoptedLine(e lock.Entry) string {
+	if e.Source == "" {
+		return fmt.Sprintf("%s %s is now managed (local only)", okStyle.Render("✓"), e.Name)
+	}
+	return fmt.Sprintf("%s %s is now managed from %s (%s)", okStyle.Render("✓"), e.Name, source.DisplayName(e.Source), trackingLabel(e.Tracking))
+}
+
+// ---- adopting several skills ----
+
+// adoptManyScreen adopts several unmanaged skills at once. Only sources whose
+// content is identical to the local copy are chosen automatically: the user
+// has not looked at each skill, and a wrong source would let the next update
+// overwrite it. The remaining skills are kept local only or walked through
+// adoptScreen one by one.
+
+type (
+	// adoptPlan is how one skill will be adopted. Unresolved plans have no
+	// source yet; reason says why.
+	adoptPlan struct {
+		req      install.AdoptRequest
+		resolved bool
+		reason   string
+	}
+	plansMsg       struct{ plans []adoptPlan }
+	adoptedManyMsg struct {
+		entries []lock.Entry
+		errs    []error
+	}
+)
+
+type adoptManyScreen struct {
+	env     *env
+	in      *install.Installer
+	found   []install.Found
+	step    adoptStep
+	spin    spinner.Model
+	list    *pickList
+	plans   []adoptPlan
+	entries []lock.Entry
+	errs    []error
+	queue   []install.Found // skills still needing a source
+	current *install.Found  // skill open in adoptScreen during the walk
+	cancel  context.CancelFunc
+}
+
+func newAdoptManyScreen(e *env, in *install.Installer, found []install.Found) *adoptManyScreen {
+	return &adoptManyScreen{env: e, in: in, found: found, spin: newSpinner()}
+}
+
+func (s *adoptManyScreen) Title() string { return fmt.Sprintf("Manage %d skills", len(s.found)) }
+
+func (s *adoptManyScreen) Help() string {
+	switch s.step {
+	case adoptSource:
+		return "↑/↓ move • enter adopt, then choose missing sources • l adopt, keep the rest local only • esc cancel"
+	case adoptDone:
+		if len(s.queue) > 0 {
+			return "enter choose missing sources • esc done"
+		}
+		return "enter done"
+	}
+	return ""
+}
+
+func (s *adoptManyScreen) Init() tea.Cmd {
+	s.step = adoptFinding
+	ctx, cancel := context.WithCancel(s.env.ctx)
+	s.cancel = cancel
+	a, found := s.env.app, s.found
+	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+		defer cancel()
+		plans := make([]adoptPlan, 0, len(found))
+		for _, f := range found {
+			if ctx.Err() != nil {
+				// Left the screen: stop fetching.
+				return plansMsg{}
+			}
+			p := adoptPlan{req: install.AdoptRequest{Found: f}}
+			req, err := a.ResolveAdopt(ctx, f, app.AdoptOptions{IdenticalOnly: true})
+			if err != nil {
+				p.reason = err.Error()
+			} else {
+				p.req, p.resolved = req, true
+			}
+			plans = append(plans, p)
+		}
+		return plansMsg{plans}
+	}))
+}
+
+// Resume runs when adoptScreen returns during the walk. A skill that was not
+// adopted means the user backed out or it failed: the walk stops, and the
+// skill moves to the end of the queue so it does not block the others.
+func (s *adoptManyScreen) Resume() tea.Cmd {
+	if s.current == nil {
+		return nil
+	}
+	f := *s.current
+	s.current = nil
+	e, ok := s.in.Lock.Get(f.Name)
+	if !ok {
+		s.queue = append(s.queue, f)
+		return nil
+	}
+	s.entries = append(s.entries, e)
+	if len(s.queue) == 0 {
+		return nil
+	}
+	return s.next()
+}
+
+func (s *adoptManyScreen) next() tea.Cmd {
+	f := s.queue[0]
+	s.queue = s.queue[1:]
+	s.current = &f
+	return push(newAdoptScreen(s.env, s.in, f))
+}
+
+func (s *adoptManyScreen) reviewList() {
+	items := make([]pickItem, 0, len(s.plans))
+	for _, p := range s.plans {
+		it := pickItem{Title: p.req.Found.Name, Badge: "needs a source", Desc: p.reason}
+		if p.resolved {
+			it.Badge = "identical"
+			it.Desc = "from " + source.DisplayName(p.req.Checkout.URL) + " • " + trackingLabel(p.req.Tracking)
+		}
+		items = append(items, it)
+	}
+	s.list = newPickList(items, false)
+}
+
+// adopt adopts all resolved skills; unresolved ones are kept local only when
+// local is set and queued for adoptScreen otherwise.
+func (s *adoptManyScreen) adopt(local bool) tea.Cmd {
+	s.step = adoptLoading
+	s.queue = nil
+	var reqs []install.AdoptRequest
+	for _, p := range s.plans {
+		switch {
+		case p.resolved:
+			reqs = append(reqs, p.req)
+		case local:
+			reqs = append(reqs, install.AdoptRequest{Found: p.req.Found})
+		default:
+			s.queue = append(s.queue, p.req.Found)
+		}
+	}
+	in := s.in
+	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+		entries, errs, err := in.AdoptAll(reqs)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return adoptedManyMsg{entries, errs}
+	}))
+}
+
+func (s *adoptManyScreen) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if s.step != adoptFinding && s.step != adoptLoading {
+			return nil
+		}
+		var cmd tea.Cmd
+		s.spin, cmd = s.spin.Update(msg)
+		return cmd
+	case plansMsg:
+		s.plans = msg.plans
+		s.reviewList()
+		s.step = adoptSource
+		return nil
+	case adoptedManyMsg:
+		s.entries, s.errs = msg.entries, msg.errs
+		s.step = adoptDone
+		return nil
+	case tea.KeyMsg:
+		return s.key(msg)
+	}
+	return nil
+}
+
+func (s *adoptManyScreen) key(k tea.KeyMsg) tea.Cmd {
+	switch s.step {
+	case adoptFinding:
+		if k.String() == "esc" {
+			s.cancel()
+			return pop
+		}
+	case adoptSource:
+		if handled, cmd := s.list.Update(k); handled {
+			return cmd
+		}
+		switch k.String() {
+		case "esc":
+			return pop
+		case "enter":
+			return s.adopt(false)
+		case "l":
+			return s.adopt(true)
+		}
+	case adoptDone:
+		switch k.String() {
+		case "enter":
+			if len(s.queue) > 0 {
+				return s.next()
+			}
+			return pop
+		case "esc":
+			return pop
+		}
+	}
+	return nil
+}
+
+func (s *adoptManyScreen) View() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Manage %d skills with faehigkeiten (files stay as they are)\n\n", len(s.found))
+	switch s.step {
+	case adoptFinding:
+		b.WriteString(s.spin.View())
+		b.WriteString(" looking for the skills in known repositories (the first search indexes them and can take a minute) …")
+	case adoptLoading:
+		b.WriteString(s.spin.View())
+		b.WriteString(" working …")
+	case adoptSource:
+		b.WriteString("Only sources identical to your copies are chosen automatically.\n\n")
+		b.WriteString(s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4))
+	case adoptDone:
+		for _, e := range s.entries {
+			b.WriteString(adoptedLine(e))
+			b.WriteString("\n")
+		}
+		for _, err := range s.errs {
+			b.WriteString(errStyle.Render(err.Error()))
+			b.WriteString("\n")
+		}
+		if n := len(s.queue); n > 0 {
+			fmt.Fprintf(&b, "\n%s", warnStyle.Render(fmt.Sprintf("%d skill(s) still need a source; press enter to choose them one by one.", n)))
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
 }

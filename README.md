@@ -41,7 +41,7 @@ Run `faehigkeiten` (or `fgk`) without arguments to start the TUI:
 - **Browse repositories**: pick a repository, select skills with <kbd>space</kbd>, press <kbd>enter</kbd>
 - **Search skills**: type to search the known repositories; <kbd>tab</kbd> switches to skills.sh
 - **Add repository**: any source; it is saved and appears in the repository list
-- **Installed skills**: see and remove what is installed in the current target, including skills that were copied by hand or installed with another tool (marked *not managed*; press <kbd>m</kbd> to manage them)
+- **Installed skills**: see and remove what is installed in the current target, including skills that were copied by hand or installed with another tool (marked *not managed*; press <kbd>m</kbd> to manage one, or select several with <kbd>space</kbd>/<kbd>a</kbd> and press <kbd>m</kbd> to manage or <kbd>d</kbd> to delete them together)
 - **Check for updates**: select and apply available updates
 - **Change target**: switch between a project directory and the global scope
 
@@ -63,6 +63,7 @@ fgk update --force                                         # …including skills
 fgk remove pdf
 fgk adopt golang-cli                                       # manage a skill installed by hand or another tool
 fgk adopt my-skill --from my-org/skills --track hash       # …from an explicit source
+fgk adopt --all                                            # manage every unmanaged skill in the target
 fgk search golang                                          # search known repositories
 fgk search --remote terraform                              # search skills.sh
 fgk repo add my-org/skills --ref main
@@ -115,6 +116,11 @@ one records it in the lockfile **without changing its files**:
   so if your copy differs from upstream, the next update check offers the upstream version.
 - Skills whose source is unknown can be adopted as *local only*: they are managed (listed and removable
   for all agents) but never checked for updates.
+- Several skills can be adopted at once (`fgk adopt --all`, or multi-select in the TUI). A source is
+  then only chosen automatically when its content is identical to your copy, so an unrelated skill
+  with the same name never overwrites yours on the next update. The TUI lets you pick sources for the
+  rest one by one or keep them local only; the CLI skips them and prints the command to adopt each.
+- Without `--track`, versioned skills track their version and the others a content hash.
 
 ## Configuration
 

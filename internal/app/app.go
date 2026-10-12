@@ -243,6 +243,95 @@ func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, err
 	return out, nil
 }
 
+// AdoptOptions controls how ResolveAdopt chooses the source of a skill.
+type AdoptOptions struct {
+	// From, Ref and Path name the source explicitly. Without From the known
+	// repositories are searched for a skill with the same name.
+	From, Ref, Path string
+	// Tracking is the requested mode; empty picks version tracking for
+	// versioned upstreams and hash tracking otherwise.
+	Tracking lock.Tracking
+	// IdenticalOnly accepts a source only when its content, at the ref that
+	// will be tracked, equals the local copy. Without it, an explicit source or
+	// the only skill with that name is accepted even if it differs. Use it when
+	// the user has not looked at each skill.
+	IdenticalOnly bool
+}
+
+// NoSourceError reports that no source could be chosen automatically.
+type NoSourceError struct {
+	Name       string
+	Candidates []Candidate
+}
+
+func (e *NoSourceError) Error() string {
+	switch len(e.Candidates) {
+	case 0:
+		return fmt.Sprintf("no known repository contains a skill named %s", e.Name)
+	case 1:
+		return fmt.Sprintf("%s differs from its only source, %s", e.Name, e.Candidates[0].Entry.Repo.Name)
+	}
+	return fmt.Sprintf("%d repositories contain %s and none matches the local copy exactly", len(e.Candidates), e.Name)
+}
+
+// ResolveAdopt builds the request that adopts f from its upstream source. When
+// version tracking is requested but upstream has no version, it falls back to
+// hash tracking; callers can compare req.Tracking with opts.Tracking. An empty
+// Tracking becomes install.DefaultAdoptTracking.
+func (a *App) ResolveAdopt(ctx context.Context, f install.Found, opts AdoptOptions) (install.AdoptRequest, error) {
+	src, ref, p := opts.From, opts.Ref, opts.Path
+	var cands []Candidate
+	if src == "" {
+		var err error
+		cands, err = a.Candidates(ctx, f)
+		if err != nil {
+			return install.AdoptRequest{}, err
+		}
+		ok := len(cands) > 0 && (cands[0].Identical || len(cands) == 1 && !opts.IdenticalOnly)
+		if !ok {
+			return install.AdoptRequest{}, &NoSourceError{Name: f.Name, Candidates: cands}
+		}
+		src, p = cands[0].Entry.Repo.URL, cands[0].Entry.Path
+		if ref == "" {
+			ref = cands[0].Entry.Repo.Ref
+		}
+	}
+	co, up, err := a.Upstream(ctx, src, ref, p, f.Name)
+	if err != nil {
+		return install.AdoptRequest{}, err
+	}
+	if opts.IdenticalOnly {
+		// The candidate check above used the repository's own ref and only the
+		// first copy; this compares what is actually tracked with every copy,
+		// since an update replaces them all, and covers explicit sources.
+		h, err := skill.Hash(up.Dir)
+		if err != nil {
+			return install.AdoptRequest{}, err
+		}
+		for _, d := range f.Dirs {
+			local, err := skill.Hash(d)
+			if err != nil {
+				return install.AdoptRequest{}, err
+			}
+			if local != h {
+				if cands == nil {
+					repo := registry.Repo{Name: source.DisplayName(co.URL), URL: co.URL, Ref: co.Ref}
+					cands = []Candidate{{Entry: registry.Entry{Name: up.Name, Path: up.Path, Repo: repo}}}
+				}
+				return install.AdoptRequest{}, &NoSourceError{Name: f.Name, Candidates: cands}
+			}
+		}
+	}
+	req := install.AdoptRequest{Found: f, Checkout: co, Upstream: up, Tracking: opts.Tracking}
+	switch {
+	case req.Tracking == "":
+		req.Tracking = install.DefaultAdoptTracking(*up)
+	case req.Tracking == lock.TrackVersion && !up.HasVersion():
+		req.Tracking = lock.TrackHash
+	}
+	return req, nil
+}
+
 // Upstream fetches src and returns the skill at skillPath, or the skill named
 // name when skillPath is empty.
 func (a *App) Upstream(ctx context.Context, src, ref, skillPath, name string) (*source.Checkout, *skill.Skill, error) {

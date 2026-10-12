@@ -37,6 +37,18 @@ func (f *scopeFlags) register(cmd *cobra.Command) {
 	cmd.MarkFlagsMutuallyExclusive("global", "project")
 }
 
+// args returns the flags that select the same scope again, for commands
+// suggested to the user.
+func (f *scopeFlags) args() string {
+	switch {
+	case f.global:
+		return " --global"
+	case f.project != "":
+		return " --project " + shellQuote(f.project)
+	}
+	return ""
+}
+
 func (f *scopeFlags) target(a *app.App) (install.Target, error) {
 	if f.global {
 		return a.Target(agent.ScopeGlobal, "")

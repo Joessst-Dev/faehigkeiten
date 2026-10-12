@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"text/tabwriter"
@@ -539,6 +541,7 @@ func newAdoptCommand() *cobra.Command {
 		skillPath string
 		track     string
 		local     bool
+		all       bool
 	)
 	cmd := &cobra.Command{
 		Use:   "adopt <skill...>",
@@ -549,16 +552,25 @@ The files are left untouched.
 
 Without --from, the known repositories are searched for a skill with the same
 name; a source with identical content is preferred. Use --local to manage a
-skill without a source (no update tracking).`,
+skill without a source (no update tracking). Use --all to adopt every
+unmanaged skill in the target; skills that cannot be adopted are skipped and
+reported.`,
 		Example: `  faehigkeiten adopt pdf
   faehigkeiten adopt golang-cli --from samber/cc-skills-golang --track version
-  faehigkeiten adopt my-notes --local`,
-		Args: cobra.MinimumNArgs(1),
+  faehigkeiten adopt my-notes --local
+  faehigkeiten adopt --all`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if all == (len(args) > 0) {
+				return fmt.Errorf("name the skills to adopt or use --all")
+			}
 			if local && (from != "" || track != "") {
 				return fmt.Errorf("--local cannot be combined with --from or --track")
 			}
-			if skillPath != "" && len(args) > 1 {
+			if all && ref != "" && from == "" {
+				// The skills come from different repositories with their own refs.
+				return fmt.Errorf("--ref can only be used with --all together with --from")
+			}
+			if skillPath != "" && (all || len(args) > 1) {
 				return fmt.Errorf("--path can only be used with a single skill")
 			}
 			a, err := app.New()
@@ -579,73 +591,113 @@ skill without a source (no update tracking).`,
 			if err != nil {
 				return err
 			}
-			out := cmd.OutOrStdout()
-			for _, name := range args {
-				f, err := app.FindUnmanaged(in, name)
-				if err != nil {
-					return err
+			var found []install.Found
+			if all {
+				if found = in.Adoptable(); len(found) == 0 {
+					return fmt.Errorf("no unmanaged skills in this target")
 				}
-				req := install.AdoptRequest{Found: f, Tracking: tracking}
-				if !local {
-					src, r, p := from, ref, skillPath
-					if src == "" {
-						c, err := pickCandidate(cmd, a, f)
-						if err != nil {
-							return err
-						}
-						src, p = c.Entry.Repo.URL, c.Entry.Path
-						if r == "" {
-							r = c.Entry.Repo.Ref
-						}
+			} else {
+				for _, name := range args {
+					if slices.ContainsFunc(found, func(f install.Found) bool { return f.Name == name }) {
+						continue
 					}
-					co, up, err := a.Upstream(cmd.Context(), src, r, p, f.Name)
+					f, err := app.FindUnmanaged(in, name)
 					if err != nil {
 						return err
 					}
-					req.Checkout, req.Upstream = co, up
-					if req.Tracking == lock.TrackVersion && !up.HasVersion() {
-						req.Tracking = lock.TrackHash
-						fmt.Fprintf(cmd.ErrOrStderr(), "%s has no upstream version, using hash tracking\n", name)
-					}
+					found = append(found, f)
 				}
-				e, err := in.Adopt(req)
+			}
+			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+			resolve := func(f install.Found) (install.AdoptRequest, error) {
+				if local {
+					return install.AdoptRequest{Found: f}, nil
+				}
+				// A skill reached through --all was not named by the user, so
+				// only an identical copy is accepted as its source.
+				opts := app.AdoptOptions{From: from, Ref: ref, Path: skillPath, Tracking: tracking, IdenticalOnly: all}
+				req, err := a.ResolveAdopt(cmd.Context(), f, opts)
 				if err != nil {
-					return err
+					return req, adoptHint(err, scope.args())
 				}
+				if tracking == lock.TrackVersion && req.Tracking == lock.TrackHash {
+					fmt.Fprintf(errOut, "%s has no upstream version, using hash tracking\n", f.Name)
+				}
+				return req, nil
+			}
+			var reqs []install.AdoptRequest
+			var errs []error
+			for _, f := range found {
+				req, err := resolve(f)
+				if err != nil {
+					errs = append(errs, fmt.Errorf("%s: %w", f.Name, err))
+					continue
+				}
+				reqs = append(reqs, req)
+			}
+			entries, adoptErrs, err := in.AdoptAll(reqs)
+			errs = append(errs, adoptErrs...)
+			if len(found) == 1 && len(errs) == 1 {
+				// A single skill: its own error says it all.
+				return errors.Unwrap(errs[0])
+			}
+			for _, err := range errs {
+				fmt.Fprintf(errOut, "skipping %v\n", err)
+			}
+			if err != nil {
+				return err
+			}
+			for _, e := range entries {
 				if e.Source == "" {
 					fmt.Fprintf(out, "adopted %s (local only, untracked)\n", e.Name)
 				} else {
 					fmt.Fprintf(out, "adopted %s from %s (%s)\n", e.Name, source.DisplayName(e.Source), describeTracking(e))
 				}
 			}
-			return in.Lock.Save()
+			if len(errs) > 0 {
+				return fmt.Errorf("%d of %d skill(s) could not be adopted", len(errs), len(found))
+			}
+			return nil
 		},
 	}
 	scope.register(cmd)
 	cmd.Flags().StringVar(&from, "from", "", "source repository (owner/repo, git URL or local directory)")
 	cmd.Flags().StringVar(&ref, "ref", "", "branch or tag of the source")
 	cmd.Flags().StringVar(&skillPath, "path", "", "path of the skill inside the source (default: found by name)")
-	cmd.Flags().StringVarP(&track, "track", "t", "", "tracking mode: version, hash or none (default: version if upstream is versioned)")
+	cmd.Flags().StringVarP(&track, "track", "t", "", "tracking mode: version, hash or none (default: version if upstream is versioned, hash otherwise)")
 	cmd.Flags().BoolVar(&local, "local", false, "manage without a source; no update tracking")
+	cmd.Flags().BoolVar(&all, "all", false, "adopt every unmanaged skill in the target")
 	return cmd
 }
 
-// pickCandidate chooses a source automatically: an identical copy, or the
-// only skill with that name. Anything else is ambiguous.
-func pickCandidate(cmd *cobra.Command, a *app.App, f install.Found) (app.Candidate, error) {
-	cands, err := a.Candidates(cmd.Context(), f)
-	if err != nil {
-		return app.Candidate{}, err
+// adoptHint adds the commands that resolve a NoSourceError; scope holds the
+// flags selecting the target the user ran with.
+func adoptHint(err error, scope string) error {
+	var ns *app.NoSourceError
+	if !errors.As(err, &ns) {
+		return err
 	}
-	switch {
-	case len(cands) == 0:
-		return app.Candidate{}, fmt.Errorf("no known repository contains a skill named %s; use --from <source> or --local", f.Name)
-	case cands[0].Identical, len(cands) == 1:
-		return cands[0], nil
+	if len(ns.Candidates) == 0 {
+		return fmt.Errorf("%w; use --from <source> or --local", err)
 	}
 	var b strings.Builder
-	for _, c := range cands {
-		fmt.Fprintf(&b, "\n  --from %s --path %s", c.Entry.Repo.URL, c.Entry.Path)
+	fmt.Fprintf(&b, "%v\n  keep your copy without a source:\n    faehigkeiten adopt %s%s --local", err, ns.Name, scope)
+	b.WriteString("\n  or track a source that differs (the next update replaces your copy):")
+	for _, c := range ns.Candidates {
+		fmt.Fprintf(&b, "\n    faehigkeiten adopt %s%s --from %s --path %s", ns.Name, scope, shellQuote(c.Entry.Repo.URL), shellQuote(c.Entry.Path))
+		if c.Entry.Repo.Ref != "" {
+			fmt.Fprintf(&b, " --ref %s", shellQuote(c.Entry.Repo.Ref))
+		}
 	}
-	return app.Candidate{}, fmt.Errorf("several repositories contain %s and none matches the local copy exactly; choose one:%s", f.Name, b.String())
+	return errors.New(b.String())
+}
+
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_./:@~+=,-]+$`)
+
+// shellQuote quotes s for a POSIX shell when it contains other characters.
+func shellQuote(s string) string {
+	if shellSafe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

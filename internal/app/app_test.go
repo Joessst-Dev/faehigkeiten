@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/app"
+	"github.com/Joessst-Dev/faehigkeiten/internal/registry"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
 )
 
@@ -60,5 +61,19 @@ var _ = Describe("Select", func() {
 	It("fails on unknown skills", func() {
 		_, err := app.Select(skills, []string{"xlsx"})
 		Expect(err).To(MatchError(ContainSubstring("xlsx")))
+	})
+})
+
+var _ = Describe("NoSourceError", func() {
+	cand := func(name string) app.Candidate {
+		return app.Candidate{Entry: registry.Entry{Name: "pdf", Repo: registry.Repo{Name: name}}}
+	}
+
+	It("explains why no source was chosen", func() {
+		Expect((&app.NoSourceError{Name: "pdf"}).Error()).To(Equal("no known repository contains a skill named pdf"))
+		Expect((&app.NoSourceError{Name: "pdf", Candidates: []app.Candidate{cand("a/b")}}).Error()).
+			To(Equal("pdf differs from its only source, a/b"))
+		Expect((&app.NoSourceError{Name: "pdf", Candidates: []app.Candidate{cand("a/b"), cand("c/d")}}).Error()).
+			To(ContainSubstring("2 repositories contain pdf"))
 	})
 })
