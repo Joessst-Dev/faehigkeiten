@@ -336,6 +336,33 @@ var _ = Describe("Indexer", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(idx.Entries).To(HaveLen(1))
 		Expect(idx.Scanned).NotTo(HaveKey("https://x/b"))
+
+		cached, _, err := registry.LoadIndexAny(x.Path, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cached.Entries).To(HaveLen(1), "the trimmed index is saved")
+		Expect(cached.Scanned).NotTo(HaveKey("https://x/b"))
+	})
+
+	It("saves an index trimmed by a request queued during a build", func() {
+		_, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+
+		c := GinkgoT().TempDir()
+		Expect(testutil.WriteFiles(c, map[string]string{"go/SKILL.md": testutil.SkillMD("go", "Go", "")})).To(Succeed())
+		f.dirs["https://x/c"] = c
+		f.gate, f.gateURL = make(chan struct{}), "https://x/c"
+		repos = append(repos, registry.Repo{Name: "c", URL: "https://x/c"})
+		done := x.Start(context.Background(), false, nil)
+
+		repos = repos[:1]
+		x.Start(context.Background(), false, nil)
+		close(f.gate)
+		Eventually(done).Should(BeClosed())
+
+		cached, _, err := registry.LoadIndexAny(x.Path, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cached.Entries).To(HaveLen(1))
+		Expect(cached.Scanned).To(HaveLen(1))
 	})
 
 	It("rebuilds for a waiter whose build was cancelled by another caller", func() {

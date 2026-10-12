@@ -36,6 +36,8 @@ type Indexer struct {
 	idx *Index // never mutated once published
 	st  IndexStatus
 	run *indexRun // the running build; nil when idle
+
+	saveMu sync.Mutex // serialises writes to Path
 }
 
 // indexRun is one call to Start that had work to do. Requests made while it
@@ -119,13 +121,13 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 	}
 
 	x.mu.Lock()
-	defer x.mu.Unlock()
 	if r := x.run; r != nil {
 		if r.queued == nil {
 			r.queued = req
 		} else {
 			r.queued.add(req)
 		}
+		x.mu.Unlock()
 		return r
 	}
 	before := x.idx
@@ -137,6 +139,7 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 			x.idx.BuiltAt = time.Time{} // never built: stale
 		}
 	}
+	planned := x.idx
 	todo, full := x.plan(req)
 	if len(todo) == 0 {
 		// Only signal a change when there is one, so pollers do not redo
@@ -146,11 +149,19 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 		}
 		r := &indexRun{done: make(chan struct{}), idx: x.idx}
 		close(r.done)
+		dropped := x.idx != planned
+		x.mu.Unlock()
+		if dropped {
+			// Removed repositories were dropped and nothing needs a build
+			// that would save it. The cache is best-effort.
+			_ = x.save()
+		}
 		return r
 	}
 	r := &indexRun{done: make(chan struct{})}
 	x.run = r
 	x.begin(len(todo))
+	x.mu.Unlock()
 	go x.build(r, req, todo, full)
 	return r
 }
@@ -180,10 +191,18 @@ func (x *Indexer) build(r *indexRun, req *indexRequest, todo []Repo, full bool) 
 			// Serve requests made during this build: they may want a
 			// re-fetch or know about repositories added since it began.
 			req, r.queued = r.queued, nil
+			planned := x.idx
 			if todo, full = x.plan(req); len(todo) > 0 {
 				x.begin(len(todo))
 				x.mu.Unlock()
 				continue
+			}
+			if x.idx != planned && err == nil {
+				// Repositories were dropped after the build saved. x.run
+				// is still set, so no other build starts meanwhile.
+				x.mu.Unlock()
+				err = x.save()
+				x.mu.Lock()
 			}
 		}
 		x.st.Building, x.st.Err = false, err
@@ -219,16 +238,26 @@ func (x *Indexer) buildOnce(req *indexRequest, repos []Repo, full bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	x.mu.Lock()
 	if full {
+		x.mu.Lock()
 		idx := x.idx.Clone()
 		idx.BuiltAt = started
 		x.idx = idx
+		x.mu.Unlock()
 	}
+	return x.save()
+}
+
+// save writes the current index to Path. Saves are serialised and each one
+// writes the index published at that time, so an older index never replaces
+// a newer one on disk. Published indexes are immutable, so the write itself
+// needs no x.mu.
+func (x *Indexer) save() error {
+	x.saveMu.Lock()
+	defer x.saveMu.Unlock()
+	x.mu.Lock()
 	idx := x.idx
 	x.mu.Unlock()
-	// Published indexes are immutable, and only one build runs at a time,
-	// so saving needs no lock.
 	return idx.Save(x.Path)
 }
 
