@@ -511,10 +511,6 @@ type AdoptRequest struct {
 	Upstream *skill.Skill
 	// Tracking defaults to DefaultAdoptTracking.
 	Tracking lock.Tracking
-	// LocalHash and UpstreamHash, if set, are the hashes of Found.Dirs[0]
-	// and Upstream.Dir, so a caller that already computed them saves Adopt
-	// the work. Empty ones are computed.
-	LocalHash, UpstreamHash string
 }
 
 // DefaultAdoptTracking is version tracking for versioned skills and hash
@@ -548,17 +544,13 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 		return entry, nil
 	}
 
-	local, upstream := req.LocalHash, req.UpstreamHash
-	var err error
-	if local == "" {
-		if local, err = skill.Hash(f.Dirs[0]); err != nil {
-			return lock.Entry{}, err
-		}
+	local, err := skill.Hash(f.Dirs[0])
+	if err != nil {
+		return lock.Entry{}, err
 	}
-	if upstream == "" {
-		if upstream, err = skill.Hash(req.Upstream.Dir); err != nil {
-			return lock.Entry{}, err
-		}
+	upstream, err := skill.Hash(req.Upstream.Dir)
+	if err != nil {
+		return lock.Entry{}, err
 	}
 	entry.Source = req.Checkout.URL
 	entry.Path = req.Upstream.Path

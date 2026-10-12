@@ -388,16 +388,6 @@ var _ = Describe("Installer", func() {
 			Expect(e.Hash).To(Equal(want))
 		})
 
-		It("uses precomputed hashes instead of hashing again", func() {
-			// Differing files but equal given hashes: only the given ones count.
-			Expect(os.WriteFile(filepath.Join(found.Dirs[0], "scripts", "run.sh"), []byte("local change"), 0o644)).To(Succeed())
-			e, err := in.Adopt(install.AdoptRequest{Found: found, Checkout: co, Upstream: &versioned, Tracking: lock.TrackHash,
-				LocalHash: "sha256:given", UpstreamHash: "sha256:given"})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(e.Hash).To(Equal("sha256:given"))
-			Expect(e.Commit).To(Equal("abc"))
-		})
-
 		It("stores the local hash and no commit when the copy differs", func() {
 			Expect(os.WriteFile(filepath.Join(found.Dirs[0], "scripts", "run.sh"), []byte("local change"), 0o644)).To(Succeed())
 			e, err := in.Adopt(install.AdoptRequest{Found: found, Checkout: co, Upstream: &versioned, Tracking: lock.TrackHash})

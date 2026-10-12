@@ -138,8 +138,6 @@ var _ = Describe("Resolver", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(req.Checkout.URL).To(Equal(origin))
 			Expect(req.Upstream.Path).To(Equal("skills/" + f.Name))
-			Expect(req.LocalHash).NotTo(BeEmpty())
-			Expect(req.LocalHash).To(Equal(req.UpstreamHash))
 		}
 		loads, hashes := r.Counts()
 		Expect(loads).To(Equal(1))
@@ -227,5 +225,22 @@ var _ = Describe("Resolver.ResolveAll", func() {
 		for _, got := range a.NewResolver().ResolveAll(ctx, all(), app.AdoptOptions{IdenticalOnly: true}) {
 			Expect(got.Err).To(MatchError(context.Canceled))
 		}
+	})
+
+	It("retries a source that failed to load", func() {
+		r := a.NewResolver()
+		src := filepath.Join(GinkgoT().TempDir(), "later")
+		_, _, err := r.Upstream(context.Background(), src, "", "", "s00")
+		Expect(err).To(HaveOccurred())
+
+		Expect(testutil.WriteFiles(src, map[string]string{"s00/SKILL.md": testutil.SkillMD("s00", "upstream", "")})).To(Succeed())
+		_, up, err := r.Upstream(context.Background(), src, "", "", "s00")
+		Expect(err).NotTo(HaveOccurred(), "the failure is not remembered")
+		Expect(up.Path).To(Equal("s00"))
+	})
+
+	It("rejects skills without directories", func() {
+		res := a.NewResolver().ResolveAll(context.Background(), []install.Found{{Name: "empty"}}, app.AdoptOptions{From: "x"})
+		Expect(res[0].Err).To(MatchError(ContainSubstring("has no directories")))
 	})
 })

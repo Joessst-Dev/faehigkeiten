@@ -18,22 +18,23 @@ import (
 // adoptConcurrency bounds how many skills ResolveAll resolves at once.
 const adoptConcurrency = 8
 
-// Resolver chooses adopt sources for one run. It reads the index once, loads
-// and scans each repository at most once and hashes each directory at most
-// once, so resolving many skills from the same repository does not repeat
-// that work. It is safe for concurrent use. It assumes sources and local
-// copies do not change while it is used, and it remembers failures,
-// including cancellation, so each run needs a new Resolver.
+// Resolver chooses adopt sources. It reads the index once, loads and scans
+// each repository once and hashes each directory once, so resolving many
+// skills from the same repository does not repeat that work. Failures are
+// shared by concurrent callers but not remembered, so a later call retries.
+// It is safe for concurrent use. It assumes sources and local copies do not
+// change while it is used, so use one per run or per screen.
 type Resolver struct {
 	app *App
 
-	indexOnce sync.Once
-	idx       *registry.Index
-	order     map[string]int // registry position by URL
-	indexErr  error
-
+	idx    memo[indexed]
 	loads  memo[loaded]
 	hashes memo[string]
+}
+
+type indexed struct {
+	idx   *registry.Index
+	order map[string]int // registry position by URL
 }
 
 type loaded struct {
@@ -46,7 +47,8 @@ func (a *App) NewResolver() *Resolver {
 	return &Resolver{app: a}
 }
 
-// memo computes a value at most once per key, even when asked concurrently.
+// memo computes a value once per key, even when asked concurrently. A failed
+// computation is forgotten once its callers have its error, so it is retried.
 type memo[V any] struct {
 	mu sync.Mutex
 	m  map[string]*memoEntry[V]
@@ -70,6 +72,13 @@ func (c *memo[V]) get(key string, fn func() (V, error)) (V, error) {
 	}
 	c.mu.Unlock()
 	e.once.Do(func() { e.v, e.err = fn() })
+	if e.err != nil {
+		c.mu.Lock()
+		if c.m[key] == e {
+			delete(c.m, key)
+		}
+		c.mu.Unlock()
+	}
 	return e.v, e.err
 }
 
@@ -80,25 +89,25 @@ func (c *memo[V]) len() int {
 }
 
 func (r *Resolver) index(ctx context.Context) (*registry.Index, map[string]int, error) {
-	r.indexOnce.Do(func() {
+	x, err := r.idx.get("", func() (indexed, error) {
 		idx, err := r.app.Index(ctx, false, nil)
 		if err != nil {
-			r.indexErr = err
-			return
+			return indexed{}, err
 		}
 		// Drop repositories removed while the index was built.
 		repos := r.app.Repos()
-		r.idx = idx.Retain(repos)
-		r.order = map[string]int{}
+		order := map[string]int{}
 		for i, repo := range repos {
-			r.order[repo.URL] = i
+			order[repo.URL] = i
 		}
+		return indexed{idx.Retain(repos), order}, nil
 	})
-	return r.idx, r.order, r.indexErr
+	return x.idx, x.order, err
 }
 
 func (r *Resolver) load(ctx context.Context, src, ref string) (*source.Checkout, []skill.Skill, error) {
-	l, err := r.loads.get(src+"#"+ref, func() (loaded, error) {
+	// NUL cannot appear in a URL or ref, so keys cannot collide.
+	l, err := r.loads.get(src+"\x00"+ref, func() (loaded, error) {
 		co, skills, err := r.app.Load(ctx, src, ref, false)
 		return loaded{co, skills}, err
 	})
@@ -154,6 +163,9 @@ func (r *Resolver) Candidates(ctx context.Context, f install.Found) ([]Candidate
 // hash tracking; callers can compare req.Tracking with opts.Tracking. An empty
 // Tracking becomes install.DefaultAdoptTracking.
 func (r *Resolver) ResolveAdopt(ctx context.Context, f install.Found, opts AdoptOptions) (install.AdoptRequest, error) {
+	if len(f.Dirs) == 0 {
+		return install.AdoptRequest{}, fmt.Errorf("skill %s has no directories", f.Name)
+	}
 	src, ref, p := opts.From, opts.Ref, opts.Path
 	var cands []Candidate
 	if src == "" {
@@ -175,18 +187,14 @@ func (r *Resolver) ResolveAdopt(ctx context.Context, f install.Found, opts Adopt
 	if err != nil {
 		return install.AdoptRequest{}, err
 	}
-	upHash, err := r.hash(up.Dir)
-	if err != nil {
-		return install.AdoptRequest{}, err
-	}
-	localHash, err := r.hash(f.Dirs[0])
-	if err != nil {
-		return install.AdoptRequest{}, err
-	}
 	if opts.IdenticalOnly {
 		// The candidate check above used the repository's own ref and only the
 		// first copy; this compares what is actually tracked with every copy,
 		// since an update replaces them all, and covers explicit sources.
+		upHash, err := r.hash(up.Dir)
+		if err != nil {
+			return install.AdoptRequest{}, err
+		}
 		for _, d := range f.Dirs {
 			local, err := r.hash(d)
 			if err != nil {
@@ -201,10 +209,9 @@ func (r *Resolver) ResolveAdopt(ctx context.Context, f install.Found, opts Adopt
 			}
 		}
 	}
-	req := install.AdoptRequest{
-		Found: f, Checkout: co, Upstream: up, Tracking: opts.Tracking,
-		LocalHash: localHash, UpstreamHash: upHash,
-	}
+	// Adopt hashes the copies again when it records them: the request may
+	// wait for confirmation while the files change.
+	req := install.AdoptRequest{Found: f, Checkout: co, Upstream: up, Tracking: opts.Tracking}
 	switch {
 	case req.Tracking == "":
 		req.Tracking = install.DefaultAdoptTracking(*up)
@@ -254,8 +261,8 @@ func (r *Resolver) ResolveAll(ctx context.Context, found []install.Found, opts A
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, adoptConcurrency)
 	for i, f := range found {
+		sem <- struct{}{}
 		wg.Go(func() {
-			sem <- struct{}{}
 			defer func() { <-sem }()
 			if err := ctx.Err(); err != nil {
 				out[i].Err = err

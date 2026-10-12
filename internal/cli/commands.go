@@ -610,10 +610,10 @@ reported.`,
 				}
 			}
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
-			res := make([]app.Resolution, len(found))
+			var res []app.Resolution
 			if local {
-				for i, f := range found {
-					res[i].Req = install.AdoptRequest{Found: f}
+				for _, f := range found {
+					res = append(res, app.Resolution{Req: install.AdoptRequest{Found: f}})
 				}
 			} else {
 				// A skill reached through --all was not named by the user, so

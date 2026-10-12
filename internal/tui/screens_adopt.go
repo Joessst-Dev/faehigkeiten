@@ -58,6 +58,7 @@ type adoptScreen struct {
 	env    *env
 	in     *install.Installer
 	found  install.Found
+	res    *app.Resolver
 	step   adoptStep
 	spin   spinner.Model
 	list   *pickList
@@ -78,7 +79,7 @@ func newAdoptScreen(e *env, in *install.Installer, f install.Found) *adoptScreen
 	ref := newInput()
 	ref.Prompt = "branch/tag (optional): "
 	ref.Width = 30
-	return &adoptScreen{env: e, in: in, found: f, spin: newSpinner(), inputs: []textinput.Model{src, ref}}
+	return &adoptScreen{env: e, in: in, found: f, res: e.app.NewResolver(), spin: newSpinner(), inputs: []textinput.Model{src, ref}}
 }
 
 func (s *adoptScreen) Title() string { return "Manage " + s.found.Name }
@@ -97,9 +98,9 @@ func (s *adoptScreen) Help() string {
 
 func (s *adoptScreen) Init() tea.Cmd {
 	s.step = adoptFinding
-	e, f := s.env, s.found
+	e, f, res := s.env, s.found, s.res
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
-		cands, err := e.app.Candidates(e.ctx, f)
+		cands, err := res.Candidates(e.ctx, f)
 		return candidatesMsg{cands, err}
 	}))
 }
@@ -126,14 +127,15 @@ func (s *adoptScreen) sourceList(cands []app.Candidate) {
 
 func (s *adoptScreen) loadUpstream(src, ref, path string) tea.Cmd {
 	s.step, s.err = adoptLoading, nil
-	e, name := s.env, s.found.Name
+	e, name, res := s.env, s.found.Name, s.res
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
 		if path == "" {
 			// Unknown location: list the repository so the user can pick.
 			co, skills, err := e.app.Load(e.ctx, src, ref, false)
 			return upstreamMsg{co: co, skills: skills, err: err}
 		}
-		co, up, err := e.app.Upstream(e.ctx, src, ref, path, name)
+		// The candidate's repository was loaded by Init already.
+		co, up, err := res.Upstream(e.ctx, src, ref, path, name)
 		return upstreamMsg{co: co, up: up, err: err}
 	}))
 }
