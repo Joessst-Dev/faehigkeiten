@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -337,16 +336,17 @@ var _ = Describe("TUI", func() {
 				// fails at once instead of going to the network.
 				other := filepath.Join(GinkgoT().TempDir(), "missing")
 				timeout := time.After(time.Minute)
+				tick := time.NewTicker(time.Millisecond)
+				defer tick.Stop()
 				for {
 					select {
 					case msg := <-got:
 						return msg
 					case <-timeout:
 						Fail("the lookup did not finish")
-					default:
+					case <-tick.C:
 						a.Config.AddRepo(config.Repo{URL: other})
 						a.Config.RemoveRepo(other)
-						runtime.Gosched()
 					}
 				}
 			}

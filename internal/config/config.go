@@ -36,7 +36,9 @@ type AgentOverride struct {
 	GlobalDir  string `yaml:"global_dir,omitempty"`
 }
 
-// Config is the persisted user configuration.
+// Config is the persisted user configuration. Only its repositories may
+// change once background tasks can see it; the other fields are set when it
+// is loaded.
 type Config struct {
 	DefaultAgents []string
 	Agents        map[string]AgentOverride

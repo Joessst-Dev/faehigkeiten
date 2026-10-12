@@ -221,17 +221,16 @@ func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, err
 	if err != nil {
 		return nil, err
 	}
+	// Drop repositories removed while the index was built.
+	repos := a.Repos()
+	idx = idx.Retain(repos)
 	order := map[string]int{}
-	for i, r := range a.Repos() {
+	for i, r := range repos {
 		order[r.URL] = i
 	}
 	var out []Candidate
 	for _, e := range idx.Entries {
 		if install.DirName(e.Name) != f.Name && path.Base(e.Path) != f.Name {
-			continue
-		}
-		if _, ok := order[e.Repo.URL]; !ok {
-			// Removed while the index was built.
 			continue
 		}
 		c := Candidate{Entry: e}
