@@ -81,6 +81,9 @@ func newModel(ctx context.Context, a *app.App, version string, t install.Target)
 
 // Run starts the TUI.
 func Run(ctx context.Context, a *app.App, version string) error {
+	// Index in the background right away, so search is ready (or at least
+	// partially populated) by the time it is opened.
+	a.Indexer().Start(ctx, false, nil)
 	p := tea.NewProgram(New(ctx, a, version), tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := p.Run()
 	return err

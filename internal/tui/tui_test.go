@@ -146,6 +146,26 @@ var _ = Describe("TUI", func() {
 		Expect(d.view()).To(ContainSubstring("Browse repositories"))
 	})
 
+	It("indexes newly added repositories when searching", func() {
+		Expect(testutil.SeedIndex(a.Config, os.Getenv(config.EnvCacheDir))).To(Succeed())
+		addRepo()
+		d.keys("esc", "esc", "up", "enter") // Search skills
+		Expect(d.view()).To(ContainSubstring("search:"))
+		d.keys("alpha")
+		v := d.view()
+		Expect(v).To(ContainSubstring("Versioned skill"))
+		Expect(v).NotTo(ContainSubstring("indexing repositories"))
+	})
+
+	It("shows indexing progress above the results", func() {
+		s := newSearchScreen(d.m.env)
+		s.idx = registry.NewIndex()
+		s.ist = registry.IndexStatus{Building: true, Done: 3, Total: 19}
+		Expect(s.View()).To(ContainSubstring("indexing repositories 3/19"))
+		s.ist.Building = false
+		Expect(s.View()).NotTo(ContainSubstring("indexing repositories"))
+	})
+
 	It("adds a repository, installs with version tracking and updates it", func() {
 		addRepo()
 		Expect(a.Config.Repos).To(HaveLen(1))
@@ -237,7 +257,7 @@ var _ = Describe("TUI", func() {
 
 	Describe("managing unmanaged skills", func() {
 		BeforeEach(func() {
-			Expect(testutil.SeedIndex(os.Getenv(config.EnvCacheDir), registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
+			Expect(testutil.SeedIndex(a.Config, os.Getenv(config.EnvCacheDir), registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
 			Expect(testutil.WriteFiles(project, map[string]string{
 				".claude/skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned skill", "1.0.0"),
 				".claude/skills/beta/SKILL.md":  testutil.SkillMD("beta", "changed by hand", ""),

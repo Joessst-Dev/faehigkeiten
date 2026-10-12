@@ -11,6 +11,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
 
+	"github.com/Joessst-Dev/faehigkeiten/internal/config"
 	"github.com/Joessst-Dev/faehigkeiten/internal/registry"
 	"github.com/Joessst-Dev/faehigkeiten/internal/source"
 )
@@ -74,9 +75,17 @@ func Commit(repo *git.Repository, dir string, files map[string]string, msg strin
 	return err
 }
 
-// SeedIndex builds the skill index for repos (typically local directories)
-// and stores it in cacheDir, so lookups never reach the builtin repositories.
-func SeedIndex(cacheDir string, repos ...registry.Repo) error {
+// SeedIndex adds repos (typically local directories) to cfg, saves it, and
+// stores their skill index in cacheDir. The builtin repositories are marked
+// as indexed, so lookups never reach them.
+func SeedIndex(cfg *config.Config, cacheDir string, repos ...registry.Repo) error {
+	for _, r := range repos {
+		cfg.AddRepo(config.Repo{Name: r.Name, URL: r.URL, Ref: r.Ref})
+	}
+	if err := cfg.Save(); err != nil {
+		return err
+	}
 	idx := registry.Build(context.Background(), source.NewManager(cacheDir), repos, false, nil)
+	idx.MarkScanned(registry.Builtin()...)
 	return idx.Save(registry.IndexPath(cacheDir))
 }
