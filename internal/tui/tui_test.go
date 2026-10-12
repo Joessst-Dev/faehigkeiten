@@ -209,8 +209,8 @@ var _ = Describe("TUI", func() {
 		d.keys("enter", "esc", "esc")
 
 		d.keys("down", "enter") // Installed skills (cursor stays on "Add repository")
-		Expect(d.view()).To(ContainSubstring("beta"))
-		Expect(d.view()).To(ContainSubstring("hash "))
+		// managed rows have no checkbox column
+		Expect(d.view()).To(ContainSubstring("› beta hash "))
 		d.keys("d")
 		Expect(d.view()).To(ContainSubstring("Remove beta"))
 		d.keys("y")
@@ -281,6 +281,84 @@ var _ = Describe("TUI", func() {
 			data, err := os.ReadFile(filepath.Join(project, ".claude", "skills", "beta", "SKILL.md"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(data)).To(ContainSubstring("changed by hand"))
+		})
+
+		It("adopts several selected skills at once, choosing only identical sources", func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/mine/SKILL.md": testutil.SkillMD("mine", "", ""),
+			})).To(Succeed())
+			d.keys("esc", "enter") // reopen Installed to pick up mine
+			d.keys("a")            // select all unmanaged skills
+			Expect(d.view()).To(ContainSubstring("3 selected"))
+			d.keys("m")
+			v := d.view()
+			Expect(v).To(ContainSubstring("from origin • Track version"))
+			Expect(v).To(ContainSubstring("beta differs from its only source"))
+			Expect(v).To(ContainSubstring("no known repository contains a skill named mine"))
+			d.keys("l")
+			v = d.view()
+			Expect(v).To(ContainSubstring("alpha is now managed from origin (Track version)"))
+			Expect(v).To(ContainSubstring("beta is now managed (local only)"))
+			Expect(v).To(ContainSubstring("mine is now managed (local only)"))
+			d.keys("enter")
+			Expect(d.view()).NotTo(ContainSubstring("not managed"))
+
+			lf := lockfile()
+			alpha, _ := lf.Get("alpha")
+			Expect(alpha.Tracking).To(Equal(lock.TrackVersion))
+			beta, ok := lf.Get("beta")
+			Expect(ok).To(BeTrue())
+			Expect(beta.Source).To(BeEmpty())
+		})
+
+		It("walks through the selected skills that need a source and can stop", func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/mine/SKILL.md": testutil.SkillMD("mine", "", ""),
+			})).To(Succeed())
+			d.keys("esc", "enter")
+			d.keys("a", "m") // beta and mine need a source
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("2 skill(s) still need a source"))
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("Manage beta"))
+			d.keys("esc") // back out: the walk stops
+			v := d.view()
+			Expect(v).To(ContainSubstring("alpha is now managed"))
+			Expect(v).To(ContainSubstring("2 skill(s) still need a source"))
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("Manage mine")) // beta moved to the end
+			d.keys("down", "enter", "enter")                     // mine: keep local only
+			Expect(d.view()).To(ContainSubstring("Manage beta"))
+			d.keys("down", "down", "enter", "enter") // beta: keep local only
+			v = d.view()
+			Expect(v).To(ContainSubstring("beta is now managed (local only)"))
+			Expect(v).To(ContainSubstring("mine is now managed (local only)"))
+			Expect(v).NotTo(ContainSubstring("still need a source"))
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("lockfile:"))
+			for _, n := range []string{"alpha", "beta", "mine"} {
+				_, ok := lockfile().Get(n)
+				Expect(ok).To(BeTrue(), n)
+			}
+		})
+
+		It("keeps the selection when the bulk screen is cancelled", func() {
+			d.keys("a", "m", "esc")
+			Expect(d.view()).To(ContainSubstring("2 selected"))
+		})
+
+		It("deletes the selected skills", func() {
+			d.keys("a", "d")
+			Expect(d.view()).To(ContainSubstring("Delete the 2 selected skills?"))
+			d.keys("y")
+			Expect(d.view()).To(ContainSubstring("removed 2 skills"))
+			Expect(filepath.Join(project, ".claude", "skills", "alpha")).NotTo(BeAnExistingFile())
+			Expect(filepath.Join(project, ".claude", "skills", "beta")).NotTo(BeAnExistingFile())
+		})
+
+		It("notes selections hidden by the filter", func() {
+			d.keys("space", "/", "beta", "enter")
+			Expect(d.view()).To(ContainSubstring("1 selected (1 hidden by the filter)"))
 		})
 
 		It("keeps a skill local only", func() {

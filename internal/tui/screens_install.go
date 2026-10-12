@@ -338,13 +338,14 @@ type installedScreen struct {
 	env     *env
 	list    *pickList
 	in      *install.Installer
-	confirm any // lock.Entry or install.Found awaiting confirmation
+	target  install.Target // target the list shows
+	confirm any            // lock.Entry, install.Found or []install.Found awaiting confirmation
 	msg     string
 	err     error
 }
 
 func newInstalledScreen(e *env) *installedScreen {
-	l := newPickList(nil, false)
+	l := newPickList(nil, true)
 	l.emptyMsg = "no skills installed here yet"
 	return &installedScreen{env: e, list: l}
 }
@@ -359,7 +360,7 @@ func (s *installedScreen) Help() string {
 	}
 	if it, ok := s.list.Current(); ok {
 		if _, unmanaged := it.Value.(install.Found); unmanaged {
-			return "m manage • d remove • u check updates • t change target • / filter"
+			return "space select • a select all • m manage • d remove • u check updates • t change target • / filter"
 		}
 	}
 	return "d remove • u check updates • t change target • / filter"
@@ -372,14 +373,24 @@ func (s *installedScreen) reload() {
 		s.list.SetItems(nil)
 		return
 	}
+	// Keep the selection when returning from another screen, but not into
+	// another target, where the same names are different skills.
+	checked := map[string]bool{}
+	if s.target == s.env.target {
+		for _, f := range s.checked() {
+			checked[f.Name] = true
+		}
+	}
+	s.target = s.env.target
 	found := in.Unmanaged()
 	items := make([]pickItem, 0, len(in.Lock.Skills)+len(found))
 	for _, e := range in.Lock.Skills {
 		items = append(items, pickItem{
-			Title: e.Name,
-			Badge: entryBadge(e),
-			Desc:  source.DisplayName(e.Source) + " • " + strings.Join(e.Agents, ", "),
-			Value: e,
+			Title:   e.Name,
+			Badge:   entryBadge(e),
+			Desc:    source.DisplayName(e.Source) + " • " + strings.Join(e.Agents, ", "),
+			NoCheck: true,
+			Value:   e,
 		})
 	}
 	for _, f := range found {
@@ -387,7 +398,12 @@ func (s *installedScreen) reload() {
 		if f.Description != "" {
 			desc += " • " + f.Description
 		}
-		items = append(items, pickItem{Title: f.Name, Badge: "not managed", Desc: desc, Value: f})
+		it := pickItem{Title: f.Name, Badge: "not managed", Desc: desc, Checked: checked[f.Name], Value: f}
+		if _, managed := in.Lock.Get(f.Name); managed {
+			// Another copy of a managed skill: removable, but not adoptable.
+			it.Desc, it.NoCheck, it.Checked = "copy of the managed skill • "+desc, true, false
+		}
+		items = append(items, it)
 	}
 	s.list.SetItems(items)
 }
@@ -412,8 +428,25 @@ func (s *installedScreen) remove(v any) error {
 		return s.in.Lock.Save()
 	case install.Found:
 		return install.RemoveFound(v)
+	case []install.Found:
+		for _, f := range v {
+			if err := install.RemoveFound(f); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+// checked returns the unmanaged skills selected for adoption.
+func (s *installedScreen) checked() []install.Found {
+	var out []install.Found
+	for _, it := range s.list.Checked() {
+		if f, ok := it.Value.(install.Found); ok {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 func confirmName(v any) string {
@@ -422,6 +455,8 @@ func confirmName(v any) string {
 		return v.Name
 	case install.Found:
 		return v.Name
+	case []install.Found:
+		return fmt.Sprintf("%d skills", len(v))
 	}
 	return ""
 }
@@ -452,10 +487,17 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 	case "esc":
 		return pop
 	case "d":
+		if checked := s.checked(); len(checked) > 0 {
+			s.confirm = checked
+			return nil
+		}
 		if it, ok := s.list.Current(); ok {
 			s.confirm = it.Value
 		}
 	case "m":
+		if checked := s.checked(); len(checked) > 0 {
+			return push(newAdoptManyScreen(s.env, s.in, checked))
+		}
 		if it, ok := s.list.Current(); ok {
 			if f, ok := it.Value.(install.Found); ok {
 				return push(newAdoptScreen(s.env, s.in, f))
@@ -480,7 +522,21 @@ func (s *installedScreen) View() string {
 	case install.Found:
 		v += "\n" + warnStyle.Render("Delete "+c.Name+"? It was not installed by faehigkeiten. (y/n)") +
 			"\n" + subtleStyle.Render(strings.Join(c.Dirs, "\n"))
+	case []install.Found:
+		names := make([]string, 0, len(c))
+		for _, f := range c {
+			names = append(names, f.Name)
+		}
+		v += "\n" + warnStyle.Render(fmt.Sprintf("Delete the %d selected skills? They were not installed by faehigkeiten. (y/n)", len(c))) +
+			"\n" + subtleStyle.Render(strings.Join(names, ", "))
 	default:
+		if n := len(s.checked()); n > 0 {
+			sel := fmt.Sprintf("%d selected", n)
+			if h := s.list.HiddenChecked(); h > 0 {
+				sel += fmt.Sprintf(" (%d hidden by the filter)", h)
+			}
+			v += "\n" + subtleStyle.Render(sel+" • m manage selected • d delete selected")
+		}
 		if s.msg != "" {
 			v += "\n" + okStyle.Render(s.msg)
 		}

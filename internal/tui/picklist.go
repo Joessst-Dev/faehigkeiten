@@ -17,7 +17,10 @@ type pickItem struct {
 	Badge    string
 	Checked  bool
 	Disabled bool
-	Value    any
+	// NoCheck renders this row of a multi-select list without a checkbox,
+	// like a row of a single-select list.
+	NoCheck bool
+	Value   any
 }
 
 // pickList is a scrollable, filterable list with optional checkboxes.
@@ -73,11 +76,29 @@ func (l *pickList) Current() (*pickItem, bool) {
 func (l *pickList) Checked() []pickItem {
 	var out []pickItem
 	for _, it := range l.items {
-		if it.Checked && !it.Disabled {
+		if it.selected() {
 			out = append(out, it)
 		}
 	}
 	return out
+}
+
+func (it pickItem) selected() bool { return it.Checked && !it.Disabled && !it.NoCheck }
+
+// HiddenChecked counts the checked items the filter hides.
+func (l *pickList) HiddenChecked() int {
+	n := 0
+	for _, it := range l.items {
+		if it.selected() {
+			n++
+		}
+	}
+	for _, i := range l.visible {
+		if l.items[i].selected() {
+			n--
+		}
+	}
+	return n
 }
 
 // Focus moves the cursor to the first item matching pred.
@@ -137,7 +158,7 @@ func (l *pickList) Update(msg tea.KeyMsg) (bool, tea.Cmd) {
 		if !l.multi {
 			return false, nil
 		}
-		if it, ok := l.Current(); ok && !it.Disabled {
+		if it, ok := l.Current(); ok && !it.Disabled && !it.NoCheck {
 			it.Checked = !it.Checked
 		}
 	case "a":
@@ -146,12 +167,12 @@ func (l *pickList) Update(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		all := true
 		for _, i := range l.visible {
-			if !l.items[i].Disabled && !l.items[i].Checked {
+			if !l.items[i].Disabled && !l.items[i].NoCheck && !l.items[i].Checked {
 				all = false
 			}
 		}
 		for _, i := range l.visible {
-			if !l.items[i].Disabled {
+			if !l.items[i].Disabled && !l.items[i].NoCheck {
 				l.items[i].Checked = !all
 			}
 		}
@@ -202,7 +223,7 @@ func (l *pickList) View(width, height int) string {
 			prefix = cursorStyle.Render("› ")
 		}
 		box := ""
-		if l.multi {
+		if l.multi && !it.NoCheck {
 			box = "[ ] "
 			if it.Checked {
 				box = "[x] "

@@ -453,6 +453,44 @@ func (in *Installer) Unmanaged() []Found {
 	return out
 }
 
+// AdoptAll adopts each request and saves the lockfile once. A request that
+// fails is reported in errs and does not stop the others. If saving fails, the
+// adopted entries are removed again so that a later save does not record them
+// unnoticed, and err is set.
+func (in *Installer) AdoptAll(reqs []AdoptRequest) (entries []lock.Entry, errs []error, err error) {
+	for _, r := range reqs {
+		e, err := in.Adopt(r)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", r.Found.Name, err))
+			continue
+		}
+		entries = append(entries, e)
+	}
+	if len(entries) == 0 {
+		return nil, errs, nil
+	}
+	if err := in.Lock.Save(); err != nil {
+		for _, e := range entries {
+			in.Lock.Remove(e.Name)
+		}
+		return nil, errs, err
+	}
+	return entries, errs, nil
+}
+
+// Adoptable returns the unmanaged skills that can be adopted. Copies of a
+// managed skill in another agent's directory are left out: their name is
+// already taken in the lockfile.
+func (in *Installer) Adoptable() []Found {
+	var out []Found
+	for _, f := range in.Unmanaged() {
+		if _, ok := in.Lock.Get(f.Name); !ok {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // RemoveFound deletes the directories of an unmanaged skill.
 func RemoveFound(f Found) error {
 	for _, d := range f.Dirs {
@@ -471,7 +509,15 @@ type AdoptRequest struct {
 	// skill as local-only, which records it without update tracking.
 	Checkout *source.Checkout
 	Upstream *skill.Skill
+	// Tracking defaults to DefaultAdoptTracking.
 	Tracking lock.Tracking
+}
+
+// DefaultAdoptTracking is version tracking for versioned skills and hash
+// tracking otherwise. Unlike installs, an adopted skill was chosen for its
+// source, so it is checked for updates unless the caller opts out.
+func DefaultAdoptTracking(s skill.Skill) lock.Tracking {
+	return AvailableTracking(s)[0]
 }
 
 // Adopt records an unmanaged skill in the lockfile. The installed files are
@@ -515,7 +561,7 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 	}
 	entry.Tracking = req.Tracking
 	if entry.Tracking == "" {
-		entry.Tracking = DefaultTracking(*req.Upstream)
+		entry.Tracking = DefaultAdoptTracking(*req.Upstream)
 	}
 	switch entry.Tracking {
 	case lock.TrackVersion:

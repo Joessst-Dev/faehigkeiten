@@ -297,6 +297,13 @@ var _ = Describe("Installer", func() {
 			))
 			Expect(manual.Version).To(Equal("0.1.0"))
 
+			By("leaving copies of managed skills out of the adoptable ones")
+			var adoptable []string
+			for _, f := range in.Adoptable() {
+				adoptable = append(adoptable, f.Name)
+			}
+			Expect(adoptable).To(Equal([]string{"manual", "other"}))
+
 			Expect(install.RemoveFound(manual)).To(Succeed())
 			Expect(filepath.Join(project, ".claude", "skills", "manual")).NotTo(BeAnExistingFile())
 			Expect(filepath.Join(project, ".claude", "skills", "pdf")).To(BeADirectory(), "managed skills are untouched")
@@ -396,6 +403,21 @@ var _ = Describe("Installer", func() {
 			e, err := in.Adopt(install.AdoptRequest{Found: found, Checkout: co, Upstream: &versioned, Tracking: lock.TrackVersion})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(e.Version).To(Equal("0.0.0"))
+		})
+
+		It("tracks the content hash by default when upstream has no version", func() {
+			e, err := in.Adopt(install.AdoptRequest{Found: found, Checkout: co, Upstream: &plain})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.Tracking).To(Equal(lock.TrackHash))
+		})
+
+		It("adopts several skills, saves once and reports failures", func() {
+			entries, errs, err := in.AdoptAll([]install.AdoptRequest{{Found: found}, {Found: found}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(entries).To(HaveLen(1))
+			Expect(errs).To(HaveLen(1))
+			Expect(errs[0]).To(MatchError(install.ErrConflict))
+			Expect(in.Lock.Path()).To(BeAnExistingFile())
 		})
 
 		It("rejects version tracking when upstream has no version", func() {
