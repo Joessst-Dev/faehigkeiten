@@ -39,6 +39,7 @@ type (
 	upstreamMsg struct {
 		co     *source.Checkout
 		up     *skill.Skill
+		ident  bool // up is identical to the local copy
 		skills []skill.Skill
 		err    error
 	}
@@ -58,6 +59,7 @@ type adoptScreen struct {
 	env    *env
 	in     *install.Installer
 	found  install.Found
+	res    *app.Resolver // shared by the lookups between Init and adopting
 	step   adoptStep
 	spin   spinner.Model
 	list   *pickList
@@ -97,9 +99,11 @@ func (s *adoptScreen) Help() string {
 
 func (s *adoptScreen) Init() tea.Cmd {
 	s.step = adoptFinding
-	e, f := s.env, s.found
+	// A new Resolver each time, so going back looks at the files again.
+	s.res = s.env.app.NewResolver()
+	e, f, res := s.env, s.found, s.res
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
-		cands, err := e.app.Candidates(e.ctx, f)
+		cands, err := res.Candidates(e.ctx, f)
 		return candidatesMsg{cands, err}
 	}))
 }
@@ -126,25 +130,34 @@ func (s *adoptScreen) sourceList(cands []app.Candidate) {
 
 func (s *adoptScreen) loadUpstream(src, ref, path string) tea.Cmd {
 	s.step, s.err = adoptLoading, nil
-	e, name := s.env, s.found.Name
+	e, name, res, local := s.env, s.found.Name, s.res, s.found.Dirs[0]
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
 		if path == "" {
 			// Unknown location: list the repository so the user can pick.
-			co, skills, err := e.app.Load(e.ctx, src, ref, false)
+			co, skills, err := res.Load(e.ctx, src, ref)
 			return upstreamMsg{co: co, skills: skills, err: err}
 		}
-		co, up, err := e.app.Upstream(e.ctx, src, ref, path, name)
-		return upstreamMsg{co: co, up: up, err: err}
+		// Reuses the repository and hashes from Init when they are known.
+		co, up, err := res.Upstream(e.ctx, src, ref, path, name)
+		if err != nil {
+			return upstreamMsg{err: err}
+		}
+		return upstreamMsg{co: co, up: up, ident: res.Identical(up.Dir, local)}
 	}))
 }
 
-func (s *adoptScreen) chooseUpstream(co *source.Checkout, up *skill.Skill) {
-	s.co, s.up = co, up
-	if h, err := skill.Hash(up.Dir); err == nil {
-		if l, err := skill.Hash(s.found.Dirs[0]); err == nil {
-			s.ident = h == l
-		}
-	}
+// pickUpstream compares a skill picked from a repository listing with the
+// local copy in the background, then continues like loadUpstream.
+func (s *adoptScreen) pickUpstream(co *source.Checkout, up *skill.Skill) tea.Cmd {
+	s.step, s.err = adoptLoading, nil
+	res, local := s.res, s.found.Dirs[0]
+	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+		return upstreamMsg{co: co, up: up, ident: res.Identical(up.Dir, local)}
+	}))
+}
+
+func (s *adoptScreen) chooseUpstream(co *source.Checkout, up *skill.Skill, ident bool) {
+	s.co, s.up, s.ident = co, up, ident
 	var items []pickItem
 	for _, t := range install.AvailableTracking(*up) {
 		items = append(items, pickItem{Title: trackingLabel(t), Desc: adoptTrackingDesc(t, s.found, up), Value: t})
@@ -200,11 +213,13 @@ func (s *adoptScreen) Update(msg tea.Msg) tea.Cmd {
 	case upstreamMsg:
 		if msg.err != nil {
 			s.err = msg.err
+			// The Resolver remembers the failure; let a retry fetch again.
+			s.res = s.env.app.NewResolver()
 			s.step = adoptOther
 			return s.inputs[s.focus].Focus()
 		}
 		if msg.up != nil {
-			s.chooseUpstream(msg.co, msg.up)
+			s.chooseUpstream(msg.co, msg.up, msg.ident)
 			return nil
 		}
 		s.co = msg.co
@@ -291,7 +306,7 @@ func (s *adoptScreen) key(k tea.KeyMsg) tea.Cmd {
 		case "enter":
 			if it, ok := s.list.Current(); ok {
 				sk := it.Value.(skill.Skill)
-				s.chooseUpstream(s.co, &sk)
+				return s.pickUpstream(s.co, &sk)
 			}
 		}
 	case adoptTracking:
@@ -431,20 +446,19 @@ func (s *adoptManyScreen) Init() tea.Cmd {
 	a, found := s.env.app, s.found
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
 		defer cancel()
-		plans := make([]adoptPlan, 0, len(found))
-		for _, f := range found {
-			if ctx.Err() != nil {
-				// Left the screen: stop fetching.
-				return plansMsg{}
-			}
-			p := adoptPlan{req: install.AdoptRequest{Found: f}}
-			req, err := a.ResolveAdopt(ctx, f, app.AdoptOptions{IdenticalOnly: true})
-			if err != nil {
-				p.reason = err.Error()
+		res := a.NewResolver().ResolveAll(ctx, found, app.AdoptOptions{IdenticalOnly: true})
+		if ctx.Err() != nil {
+			// Left the screen: the results are incomplete.
+			return plansMsg{}
+		}
+		plans := make([]adoptPlan, len(found))
+		for i, r := range res {
+			plans[i] = adoptPlan{req: install.AdoptRequest{Found: found[i]}}
+			if r.Err != nil {
+				plans[i].reason = r.Err.Error()
 			} else {
-				p.req, p.resolved = req, true
+				plans[i].req, plans[i].resolved = r.Req, true
 			}
-			plans = append(plans, p)
 		}
 		return plansMsg{plans}
 	}))
