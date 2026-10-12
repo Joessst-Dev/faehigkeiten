@@ -170,7 +170,7 @@ var _ = Describe("TUI", func() {
 
 	It("adds a repository, installs with version tracking and updates it", func() {
 		addRepo()
-		Expect(a.Config.Repos).To(HaveLen(1))
+		Expect(a.Config.RepoList()).To(HaveLen(1))
 
 		d.keys("enter") // install alpha (cursor on first skill)
 		Expect(d.view()).To(ContainSubstring("Where should skills be installed?"))

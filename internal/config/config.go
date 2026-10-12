@@ -38,13 +38,38 @@ type AgentOverride struct {
 
 // Config is the persisted user configuration.
 type Config struct {
-	// Repos may be changed while background tasks read it: use AddRepo,
-	// RemoveRepo and RepoList once the config is shared.
+	DefaultAgents []string
+	Agents        map[string]AgentOverride
+
+	// repos may change while background tasks read it, so it is only
+	// reached through AddRepo, RemoveRepo and RepoList.
+	mu    sync.Mutex
+	repos []Repo
+}
+
+// fileConfig is the on-disk form of Config.
+type fileConfig struct {
 	Repos         []Repo                   `yaml:"repos,omitempty"`
 	DefaultAgents []string                 `yaml:"default_agents,omitempty"`
 	Agents        map[string]AgentOverride `yaml:"agents,omitempty"`
+}
 
-	mu sync.Mutex // guards Repos
+// MarshalYAML implements yaml.Marshaler.
+func (c *Config) MarshalYAML() (any, error) {
+	return fileConfig{Repos: c.RepoList(), DefaultAgents: c.DefaultAgents, Agents: c.Agents}, nil
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (c *Config) UnmarshalYAML(n *yaml.Node) error {
+	var f fileConfig
+	if err := n.Decode(&f); err != nil {
+		return err
+	}
+	c.DefaultAgents, c.Agents = f.DefaultAgents, f.Agents
+	c.mu.Lock()
+	c.repos = f.Repos
+	c.mu.Unlock()
+	return nil
 }
 
 // Dir returns the configuration directory.
@@ -116,9 +141,7 @@ func (c *Config) Save() error {
 
 // SaveFile writes the config to p.
 func (c *Config) SaveFile(p string) error {
-	c.mu.Lock()
 	data, err := marshal(c)
-	c.mu.Unlock()
 	if err != nil {
 		return err
 	}
@@ -132,10 +155,10 @@ func (c *Config) SaveFile(p string) error {
 func (c *Config) AddRepo(r Repo) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if slices.ContainsFunc(c.Repos, func(x Repo) bool { return x.URL == r.URL }) {
+	if slices.ContainsFunc(c.repos, func(x Repo) bool { return x.URL == r.URL }) {
 		return false
 	}
-	c.Repos = append(c.Repos, r)
+	c.repos = append(c.repos, r)
 	return true
 }
 
@@ -143,17 +166,17 @@ func (c *Config) AddRepo(r Repo) bool {
 func (c *Config) RemoveRepo(url string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	n := len(c.Repos)
-	c.Repos = slices.DeleteFunc(c.Repos, func(x Repo) bool { return x.URL == url })
-	return len(c.Repos) != n
+	n := len(c.repos)
+	c.repos = slices.DeleteFunc(c.repos, func(x Repo) bool { return x.URL == url })
+	return len(c.repos) != n
 }
 
-// RepoList returns a copy of the user's repositories. Unlike Repos, it may be
-// called while another goroutine adds or removes one.
+// RepoList returns a copy of the user's repositories. It may be called while
+// another goroutine adds or removes one.
 func (c *Config) RepoList() []Repo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return slices.Clone(c.Repos)
+	return slices.Clone(c.repos)
 }
 
 func marshal(v any) ([]byte, error) {
