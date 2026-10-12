@@ -432,13 +432,14 @@ func (s *adoptManyScreen) Init() tea.Cmd {
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
 		defer cancel()
 		plans := make([]adoptPlan, 0, len(found))
+		r := a.NewResolver()
 		for _, f := range found {
 			if ctx.Err() != nil {
 				// Left the screen: stop fetching.
 				return plansMsg{}
 			}
 			p := adoptPlan{req: install.AdoptRequest{Found: f}}
-			req, err := a.ResolveAdopt(ctx, f, app.AdoptOptions{IdenticalOnly: true})
+			req, err := r.ResolveAdopt(ctx, f, app.AdoptOptions{IdenticalOnly: true})
 			if err != nil {
 				p.reason = err.Error()
 			} else {

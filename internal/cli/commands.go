@@ -610,6 +610,7 @@ reported.`,
 				}
 			}
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
+			resolver := a.NewResolver()
 			resolve := func(f install.Found) (install.AdoptRequest, error) {
 				if local {
 					return install.AdoptRequest{Found: f}, nil
@@ -617,7 +618,7 @@ reported.`,
 				// A skill reached through --all was not named by the user, so
 				// only an identical copy is accepted as its source.
 				opts := app.AdoptOptions{From: from, Ref: ref, Path: skillPath, Tracking: tracking, IdenticalOnly: all}
-				req, err := a.ResolveAdopt(cmd.Context(), f, opts)
+				req, err := resolver.ResolveAdopt(cmd.Context(), f, opts)
 				if err != nil {
 					return req, adoptHint(err, scope.args())
 				}

@@ -6,9 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 
@@ -213,43 +211,7 @@ type Candidate struct {
 // repositories. Identical copies come first, then repositories in registry
 // order (user repositories, then by popularity).
 func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, error) {
-	idx, err := a.Index(ctx, false, nil)
-	if err != nil {
-		return nil, err
-	}
-	local, err := skill.Hash(f.Dirs[0])
-	if err != nil {
-		return nil, err
-	}
-	// Drop repositories removed while the index was built.
-	repos := a.Repos()
-	idx = idx.Retain(repos)
-	order := map[string]int{}
-	for i, r := range repos {
-		order[r.URL] = i
-	}
-	var out []Candidate
-	for _, e := range idx.Entries {
-		if install.DirName(e.Name) != f.Name && path.Base(e.Path) != f.Name {
-			continue
-		}
-		c := Candidate{Entry: e}
-		if co, err := a.Sources.Fetch(ctx, e.Repo.URL, e.Repo.Ref, false); err == nil {
-			if dir, err := co.SkillDir(e.Path); err == nil {
-				if h, err := skill.Hash(dir); err == nil {
-					c.Identical = h == local
-				}
-			}
-		}
-		out = append(out, c)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Identical != out[j].Identical {
-			return out[i].Identical
-		}
-		return order[out[i].Entry.Repo.URL] < order[out[j].Entry.Repo.URL]
-	})
-	return out, nil
+	return a.NewResolver().Candidates(ctx, f)
 }
 
 // AdoptOptions controls how ResolveAdopt chooses the source of a skill.
@@ -283,88 +245,16 @@ func (e *NoSourceError) Error() string {
 	return fmt.Sprintf("%d repositories contain %s and none matches the local copy exactly", len(e.Candidates), e.Name)
 }
 
-// ResolveAdopt builds the request that adopts f from its upstream source. When
-// version tracking is requested but upstream has no version, it falls back to
-// hash tracking; callers can compare req.Tracking with opts.Tracking. An empty
-// Tracking becomes install.DefaultAdoptTracking.
+// ResolveAdopt builds the request that adopts f from its upstream source. See
+// Resolver.ResolveAdopt; use a Resolver to adopt several skills.
 func (a *App) ResolveAdopt(ctx context.Context, f install.Found, opts AdoptOptions) (install.AdoptRequest, error) {
-	src, ref, p := opts.From, opts.Ref, opts.Path
-	var cands []Candidate
-	if src == "" {
-		var err error
-		cands, err = a.Candidates(ctx, f)
-		if err != nil {
-			return install.AdoptRequest{}, err
-		}
-		ok := len(cands) > 0 && (cands[0].Identical || len(cands) == 1 && !opts.IdenticalOnly)
-		if !ok {
-			return install.AdoptRequest{}, &NoSourceError{Name: f.Name, Candidates: cands}
-		}
-		src, p = cands[0].Entry.Repo.URL, cands[0].Entry.Path
-		if ref == "" {
-			ref = cands[0].Entry.Repo.Ref
-		}
-	}
-	co, up, err := a.Upstream(ctx, src, ref, p, f.Name)
-	if err != nil {
-		return install.AdoptRequest{}, err
-	}
-	if opts.IdenticalOnly {
-		// The candidate check above used the repository's own ref and only the
-		// first copy; this compares what is actually tracked with every copy,
-		// since an update replaces them all, and covers explicit sources.
-		h, err := skill.Hash(up.Dir)
-		if err != nil {
-			return install.AdoptRequest{}, err
-		}
-		for _, d := range f.Dirs {
-			local, err := skill.Hash(d)
-			if err != nil {
-				return install.AdoptRequest{}, err
-			}
-			if local != h {
-				if cands == nil {
-					repo := registry.Repo{Name: source.DisplayName(co.URL), URL: co.URL, Ref: co.Ref}
-					cands = []Candidate{{Entry: registry.Entry{Name: up.Name, Path: up.Path, Repo: repo}}}
-				}
-				return install.AdoptRequest{}, &NoSourceError{Name: f.Name, Candidates: cands}
-			}
-		}
-	}
-	req := install.AdoptRequest{Found: f, Checkout: co, Upstream: up, Tracking: opts.Tracking}
-	switch {
-	case req.Tracking == "":
-		req.Tracking = install.DefaultAdoptTracking(*up)
-	case req.Tracking == lock.TrackVersion && !up.HasVersion():
-		req.Tracking = lock.TrackHash
-	}
-	return req, nil
+	return a.NewResolver().ResolveAdopt(ctx, f, opts)
 }
 
 // Upstream fetches src and returns the skill at skillPath, or the skill named
 // name when skillPath is empty.
 func (a *App) Upstream(ctx context.Context, src, ref, skillPath, name string) (*source.Checkout, *skill.Skill, error) {
-	co, skills, err := a.Load(ctx, src, ref, false)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, s := range skills {
-		if skillPath != "" && s.Path == strings.Trim(skillPath, "/") {
-			return co, &s, nil
-		}
-	}
-	if skillPath == "" {
-		for _, s := range skills {
-			if install.DirName(s.Name) == name || path.Base(s.Path) == name {
-				return co, &s, nil
-			}
-		}
-	}
-	want := skillPath
-	if want == "" {
-		want = name
-	}
-	return nil, nil, fmt.Errorf("skill %q not found in %s", want, source.DisplayName(co.URL))
+	return a.NewResolver().Upstream(ctx, src, ref, skillPath, name)
 }
 
 // FindUnmanaged returns the unmanaged skill with the given name.

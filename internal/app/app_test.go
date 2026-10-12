@@ -1,6 +1,8 @@
 package app_test
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -8,8 +10,11 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/app"
+	"github.com/Joessst-Dev/faehigkeiten/internal/config"
+	"github.com/Joessst-Dev/faehigkeiten/internal/install"
 	"github.com/Joessst-Dev/faehigkeiten/internal/registry"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
+	"github.com/Joessst-Dev/faehigkeiten/internal/testutil"
 )
 
 var _ = Describe("ProjectRoot", func() {
@@ -75,5 +80,76 @@ var _ = Describe("NoSourceError", func() {
 			To(Equal("pdf differs from its only source, a/b"))
 		Expect((&app.NoSourceError{Name: "pdf", Candidates: []app.Candidate{cand("a/b"), cand("c/d")}}).Error()).
 			To(ContainSubstring("2 repositories contain pdf"))
+	})
+})
+
+var _ = Describe("Resolver", func() {
+	var (
+		a       *app.App
+		origin  string
+		project string
+	)
+
+	found := func(name string, dirs ...string) install.Found {
+		return install.Found{Name: name, Agents: []string{"claude-code"}, Dirs: dirs}
+	}
+
+	BeforeEach(func() {
+		base := GinkgoT().TempDir()
+		GinkgoT().Setenv(config.EnvConfigDir, filepath.Join(base, "config"))
+		GinkgoT().Setenv(config.EnvCacheDir, filepath.Join(base, "cache"))
+		GinkgoT().Setenv("HOME", filepath.Join(base, "home"))
+		GinkgoT().Setenv("USERPROFILE", filepath.Join(base, "home"))
+		origin = filepath.Join(base, "origin")
+		_, err := testutil.InitRepo(origin, map[string]string{
+			"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", "1.0.0"),
+			"skills/beta/SKILL.md":  testutil.SkillMD("beta", "Unversioned", ""),
+			"skills/gamma/SKILL.md": testutil.SkillMD("gamma", "Third", ""),
+		})
+		Expect(err).NotTo(HaveOccurred())
+		cfg, err := config.Load()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(testutil.SeedIndex(cfg, filepath.Join(base, "cache"), registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
+		a, err = app.New()
+		Expect(err).NotTo(HaveOccurred())
+
+		project = filepath.Join(base, "project")
+		Expect(testutil.WriteFiles(project, map[string]string{
+			"claude/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", "1.0.0"),
+			"agents/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", "1.0.0"),
+			"claude/beta/SKILL.md":  testutil.SkillMD("beta", "Unversioned", ""),
+			"agents/beta/SKILL.md":  testutil.SkillMD("beta", "edited", ""),
+			"claude/gamma/SKILL.md": testutil.SkillMD("gamma", "Third", ""),
+			"claude/mine/SKILL.md":  testutil.SkillMD("mine", "", ""),
+		})).To(Succeed())
+	})
+
+	dir := func(agent, name string) string { return filepath.Join(project, agent, name) }
+
+	It("loads each repository and hashes each directory once per run", func() {
+		r := a.NewResolver()
+		opts := app.AdoptOptions{IdenticalOnly: true}
+		for _, f := range []install.Found{
+			found("alpha", dir("claude", "alpha"), dir("agents", "alpha")),
+			found("gamma", dir("claude", "gamma")),
+		} {
+			req, err := r.ResolveAdopt(context.Background(), f, opts)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(req.Checkout.URL).To(Equal(origin))
+			Expect(req.Upstream.Path).To(Equal("skills/" + f.Name))
+			Expect(req.LocalHash).NotTo(BeEmpty())
+			Expect(req.LocalHash).To(Equal(req.UpstreamHash))
+		}
+		loads, hashes := r.Counts()
+		Expect(loads).To(Equal(1))
+		Expect(hashes).To(Equal(5), "three local copies and two upstream skills")
+	})
+
+	It("still checks every local copy", func() {
+		_, err := a.NewResolver().ResolveAdopt(context.Background(),
+			found("beta", dir("claude", "beta"), dir("agents", "beta")), app.AdoptOptions{IdenticalOnly: true})
+		var nse *app.NoSourceError
+		Expect(errors.As(err, &nse)).To(BeTrue())
+		Expect(nse.Candidates).To(HaveLen(1))
 	})
 })
