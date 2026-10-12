@@ -86,6 +86,6 @@ func SeedIndex(cfg *config.Config, cacheDir string, repos ...registry.Repo) erro
 		return err
 	}
 	idx := registry.Build(context.Background(), source.NewManager(cacheDir), repos, false, nil)
-	idx.MarkScanned(registry.Builtin()...)
+	idx = idx.MarkScanned(registry.Builtin()...)
 	return idx.Save(registry.IndexPath(cacheDir))
 }

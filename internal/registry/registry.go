@@ -104,8 +104,15 @@ func (r Repo) key() string {
 	return r.URL + "#" + r.Ref
 }
 
-// MarkScanned records repos as indexed at BuiltAt unless they already are.
-func (idx *Index) MarkScanned(repos ...Repo) {
+// MarkScanned returns a copy of idx that records repos as indexed at BuiltAt
+// unless they already are. idx is not modified.
+func (idx *Index) MarkScanned(repos ...Repo) *Index {
+	out := idx.Clone()
+	out.markScanned(repos)
+	return out
+}
+
+func (idx *Index) markScanned(repos []Repo) {
 	for _, r := range repos {
 		if _, ok := idx.Scanned[r.key()]; !ok {
 			idx.Scanned[r.key()] = idx.BuiltAt

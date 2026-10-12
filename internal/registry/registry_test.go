@@ -162,6 +162,16 @@ var _ = Describe("Index", func() {
 		Expect(fixed.Errors).NotTo(HaveKey("https://x/down"))
 	})
 
+	It("marks repositories as scanned without touching the original", func() {
+		idx := registry.Build(context.Background(), f, repos[:1], false, nil)
+		extra := registry.Repo{Name: "c", URL: "https://x/c", Ref: "v1"}
+		marked := idx.MarkScanned(extra)
+		Expect(idx.Scanned).NotTo(HaveKey("https://x/c#v1"))
+		Expect(marked.Scanned).To(HaveKeyWithValue("https://x/c#v1", idx.BuiltAt))
+		Expect(marked.Scanned).To(HaveKeyWithValue("https://x/a", idx.Scanned["https://x/a"]))
+		Expect(marked.Missing([]registry.Repo{repos[0], extra})).To(BeEmpty())
+	})
+
 	It("reports repositories that were never indexed or failed long ago", func() {
 		idx := registry.Build(context.Background(), f, repos[:2], false, nil)
 		extra := registry.Repo{Name: "c", URL: "https://x/c"}
