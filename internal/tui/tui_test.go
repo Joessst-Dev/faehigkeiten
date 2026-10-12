@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -332,6 +333,9 @@ var _ = Describe("TUI", func() {
 						}
 					}()
 				}
+				// A missing local repository, so an index build that sees it
+				// fails at once instead of going to the network.
+				other := filepath.Join(GinkgoT().TempDir(), "missing")
 				timeout := time.After(time.Minute)
 				for {
 					select {
@@ -340,8 +344,9 @@ var _ = Describe("TUI", func() {
 					case <-timeout:
 						Fail("the lookup did not finish")
 					default:
-						a.Config.AddRepo(config.Repo{URL: "https://example.com/other"})
-						a.Config.RemoveRepo("https://example.com/other")
+						a.Config.AddRepo(config.Repo{URL: other})
+						a.Config.RemoveRepo(other)
+						runtime.Gosched()
 					}
 				}
 			}

@@ -225,16 +225,13 @@ func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, err
 	for i, r := range a.Repos() {
 		order[r.URL] = i
 	}
-	// Repositories removed while the index was built sort last.
-	rank := func(url string) int {
-		if i, ok := order[url]; ok {
-			return i
-		}
-		return len(order)
-	}
 	var out []Candidate
 	for _, e := range idx.Entries {
 		if install.DirName(e.Name) != f.Name && path.Base(e.Path) != f.Name {
+			continue
+		}
+		if _, ok := order[e.Repo.URL]; !ok {
+			// Removed while the index was built.
 			continue
 		}
 		c := Candidate{Entry: e}
@@ -251,7 +248,7 @@ func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, err
 		if out[i].Identical != out[j].Identical {
 			return out[i].Identical
 		}
-		return rank(out[i].Entry.Repo.URL) < rank(out[j].Entry.Repo.URL)
+		return order[out[i].Entry.Repo.URL] < order[out[j].Entry.Repo.URL]
 	})
 	return out, nil
 }
