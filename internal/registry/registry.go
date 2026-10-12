@@ -94,6 +94,10 @@ type Index struct {
 	// or not, so new repositories can be indexed without a full rebuild. It
 	// is keyed by Repo.key, so changing a repository's ref re-indexes it.
 	Scanned map[string]time.Time `json:"scanned,omitempty"`
+
+	// legacy is set on caches written before Scanned existed until
+	// finishLegacy has run.
+	legacy bool
 }
 
 // key identifies what was indexed for a repository: its URL and ref.
@@ -104,13 +108,39 @@ func (r Repo) key() string {
 	return r.URL + "#" + r.Ref
 }
 
-// MarkScanned records repos as indexed at BuiltAt unless they already are.
-func (idx *Index) MarkScanned(repos ...Repo) {
+// WithScanned returns a copy of idx that records repos as indexed at BuiltAt
+// unless they already are. idx is not modified.
+func (idx *Index) WithScanned(repos ...Repo) *Index {
+	out := idx.Clone()
 	for _, r := range repos {
+		if _, ok := out.Scanned[r.key()]; !ok {
+			out.Scanned[r.key()] = out.BuiltAt
+		}
+	}
+	return out
+}
+
+// finishLegacy completes the conversion of a cache written before Scanned
+// existed. LoadIndexAny marked the repositories with entries; failures were
+// recorded by URL only, so each configured repository that failed is marked
+// under its current ref, to be retried after ErrorRetry like any failure.
+// Repositories with neither are left unmarked and indexed once: they may have
+// been added after the cache was built. So are repositories whose entries came
+// from another ref.
+func (idx *Index) finishLegacy(repos []Repo) {
+	indexed := map[string]bool{}
+	for _, e := range idx.Entries {
+		indexed[e.Repo.URL] = true
+	}
+	for _, r := range repos {
+		if _, failed := idx.Errors[r.URL]; !failed || indexed[r.URL] {
+			continue
+		}
 		if _, ok := idx.Scanned[r.key()]; !ok {
 			idx.Scanned[r.key()] = idx.BuiltAt
 		}
 	}
+	idx.legacy = false
 }
 
 // NewIndex returns an empty index.
@@ -348,14 +378,14 @@ func LoadIndexAny(p string, ttl time.Duration) (idx *Index, fresh bool, err erro
 		idx.Errors = map[string]string{}
 	}
 	if idx.Scanned == nil {
-		// Caches written before Scanned existed: treat every repository
-		// with entries or errors as indexed at build time.
+		// Caches written before Scanned existed: repositories with entries
+		// were indexed at build time. Errors are keyed by URL without the
+		// ref, so the Indexer marks failed repositories once it knows the
+		// configured refs; see finishLegacy.
 		idx.Scanned = map[string]time.Time{}
+		idx.legacy = true
 		for _, e := range idx.Entries {
 			idx.Scanned[e.Repo.key()] = idx.BuiltAt
-		}
-		for u := range idx.Errors {
-			idx.Scanned[u] = idx.BuiltAt
 		}
 	}
 	return idx, ttl <= 0 || time.Since(idx.BuiltAt) <= ttl, nil
