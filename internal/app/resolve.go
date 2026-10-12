@@ -15,6 +15,9 @@ import (
 	"github.com/Joessst-Dev/faehigkeiten/internal/source"
 )
 
+// adoptConcurrency bounds how many skills ResolveAll resolves at once.
+const adoptConcurrency = 8
+
 // Resolver chooses adopt sources for one run. It reads the index once, loads
 // and scans each repository at most once and hashes each directory at most
 // once, so resolving many skills from the same repository does not repeat
@@ -235,4 +238,32 @@ func (r *Resolver) Upstream(ctx context.Context, src, ref, skillPath, name strin
 		want = name
 	}
 	return nil, nil, fmt.Errorf("skill %q not found in %s", want, source.DisplayName(co.URL))
+}
+
+// Resolution is the outcome of resolving one skill.
+type Resolution struct {
+	Req install.AdoptRequest
+	Err error
+}
+
+// ResolveAll resolves found in parallel, each with opts, and returns the
+// results in the same order. Skills not started before ctx is cancelled fail
+// with its error.
+func (r *Resolver) ResolveAll(ctx context.Context, found []install.Found, opts AdoptOptions) []Resolution {
+	out := make([]Resolution, len(found))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, adoptConcurrency)
+	for i, f := range found {
+		wg.Go(func() {
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			if err := ctx.Err(); err != nil {
+				out[i].Err = err
+				return
+			}
+			out[i].Req, out[i].Err = r.ResolveAdopt(ctx, f, opts)
+		})
+	}
+	wg.Wait()
+	return out
 }

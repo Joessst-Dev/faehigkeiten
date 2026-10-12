@@ -610,32 +610,29 @@ reported.`,
 				}
 			}
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
-			resolver := a.NewResolver()
-			resolve := func(f install.Found) (install.AdoptRequest, error) {
-				if local {
-					return install.AdoptRequest{Found: f}, nil
+			res := make([]app.Resolution, len(found))
+			if local {
+				for i, f := range found {
+					res[i].Req = install.AdoptRequest{Found: f}
 				}
+			} else {
 				// A skill reached through --all was not named by the user, so
 				// only an identical copy is accepted as its source.
 				opts := app.AdoptOptions{From: from, Ref: ref, Path: skillPath, Tracking: tracking, IdenticalOnly: all}
-				req, err := resolver.ResolveAdopt(cmd.Context(), f, opts)
-				if err != nil {
-					return req, adoptHint(err, scope.args())
-				}
-				if tracking == lock.TrackVersion && req.Tracking == lock.TrackHash {
-					fmt.Fprintf(errOut, "%s has no upstream version, using hash tracking\n", f.Name)
-				}
-				return req, nil
+				res = a.NewResolver().ResolveAll(cmd.Context(), found, opts)
 			}
 			var reqs []install.AdoptRequest
 			var errs []error
-			for _, f := range found {
-				req, err := resolve(f)
-				if err != nil {
-					errs = append(errs, fmt.Errorf("%s: %w", f.Name, err))
+			for i, r := range res {
+				f := found[i]
+				if r.Err != nil {
+					errs = append(errs, fmt.Errorf("%s: %w", f.Name, adoptHint(r.Err, scope.args())))
 					continue
 				}
-				reqs = append(reqs, req)
+				if tracking == lock.TrackVersion && r.Req.Tracking == lock.TrackHash {
+					fmt.Fprintf(errOut, "%s has no upstream version, using hash tracking\n", f.Name)
+				}
+				reqs = append(reqs, r.Req)
 			}
 			entries, adoptErrs, err := in.AdoptAll(reqs)
 			errs = append(errs, adoptErrs...)

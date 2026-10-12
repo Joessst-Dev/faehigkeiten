@@ -431,21 +431,19 @@ func (s *adoptManyScreen) Init() tea.Cmd {
 	a, found := s.env.app, s.found
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
 		defer cancel()
-		plans := make([]adoptPlan, 0, len(found))
-		r := a.NewResolver()
-		for _, f := range found {
-			if ctx.Err() != nil {
-				// Left the screen: stop fetching.
-				return plansMsg{}
-			}
-			p := adoptPlan{req: install.AdoptRequest{Found: f}}
-			req, err := r.ResolveAdopt(ctx, f, app.AdoptOptions{IdenticalOnly: true})
-			if err != nil {
-				p.reason = err.Error()
+		res := a.NewResolver().ResolveAll(ctx, found, app.AdoptOptions{IdenticalOnly: true})
+		if ctx.Err() != nil {
+			// Left the screen: the results are incomplete.
+			return plansMsg{}
+		}
+		plans := make([]adoptPlan, len(found))
+		for i, r := range res {
+			plans[i] = adoptPlan{req: install.AdoptRequest{Found: found[i]}}
+			if r.Err != nil {
+				plans[i].reason = r.Err.Error()
 			} else {
-				p.req, p.resolved = req, true
+				plans[i].req, plans[i].resolved = r.Req, true
 			}
-			plans = append(plans, p)
 		}
 		return plansMsg{plans}
 	}))

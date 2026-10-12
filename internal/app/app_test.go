@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -151,5 +152,80 @@ var _ = Describe("Resolver", func() {
 		var nse *app.NoSourceError
 		Expect(errors.As(err, &nse)).To(BeTrue())
 		Expect(nse.Candidates).To(HaveLen(1))
+	})
+})
+
+var _ = Describe("Resolver.ResolveAll", func() {
+	var (
+		a       *app.App
+		project string
+	)
+
+	BeforeEach(func() {
+		base := GinkgoT().TempDir()
+		GinkgoT().Setenv(config.EnvConfigDir, filepath.Join(base, "config"))
+		GinkgoT().Setenv(config.EnvCacheDir, filepath.Join(base, "cache"))
+		GinkgoT().Setenv("HOME", filepath.Join(base, "home"))
+		GinkgoT().Setenv("USERPROFILE", filepath.Join(base, "home"))
+		origin := filepath.Join(base, "origin")
+		files := map[string]string{}
+		local := map[string]string{}
+		for i := range 20 {
+			name := fmt.Sprintf("s%02d", i)
+			files["skills/"+name+"/SKILL.md"] = testutil.SkillMD(name, "upstream", "")
+			desc := "upstream"
+			if i%3 == 1 {
+				desc = "edited"
+			}
+			local[name+"/SKILL.md"] = testutil.SkillMD(name, desc, "")
+		}
+		local["mine/SKILL.md"] = testutil.SkillMD("mine", "", "")
+		_, err := testutil.InitRepo(origin, files)
+		Expect(err).NotTo(HaveOccurred())
+		cfg, err := config.Load()
+		Expect(err).NotTo(HaveOccurred())
+		Expect(testutil.SeedIndex(cfg, filepath.Join(base, "cache"), registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
+		a, err = app.New()
+		Expect(err).NotTo(HaveOccurred())
+		project = filepath.Join(base, "project")
+		Expect(testutil.WriteFiles(project, local)).To(Succeed())
+	})
+
+	all := func() []install.Found {
+		var out []install.Found
+		for i := range 20 {
+			name := fmt.Sprintf("s%02d", i)
+			out = append(out, install.Found{Name: name, Dirs: []string{filepath.Join(project, name)}})
+		}
+		return append(out, install.Found{Name: "mine", Dirs: []string{filepath.Join(project, "mine")}})
+	}
+
+	It("returns results in input order", func() {
+		r := a.NewResolver()
+		found := all()
+		res := r.ResolveAll(context.Background(), found, app.AdoptOptions{IdenticalOnly: true})
+		Expect(res).To(HaveLen(len(found)))
+		for i, got := range res {
+			switch {
+			case found[i].Name == "mine":
+				Expect(got.Err).To(MatchError(ContainSubstring("no known repository")))
+			case i%3 == 1:
+				Expect(got.Err).To(MatchError(ContainSubstring("differs from its only source")), found[i].Name)
+			default:
+				Expect(got.Err).NotTo(HaveOccurred(), found[i].Name)
+				Expect(got.Req.Found.Name).To(Equal(found[i].Name))
+				Expect(got.Req.Upstream.Path).To(Equal("skills/" + found[i].Name))
+			}
+		}
+		loads, _ := r.Counts()
+		Expect(loads).To(Equal(1))
+	})
+
+	It("stops when the context is cancelled", func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		for _, got := range a.NewResolver().ResolveAll(ctx, all(), app.AdoptOptions{IdenticalOnly: true}) {
+			Expect(got.Err).To(MatchError(context.Canceled))
+		}
 	})
 })
