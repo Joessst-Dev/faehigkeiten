@@ -227,20 +227,45 @@ var _ = Describe("Resolver.ResolveAll", func() {
 		}
 	})
 
-	It("retries a source that failed to load", func() {
-		r := a.NewResolver()
-		src := filepath.Join(GinkgoT().TempDir(), "later")
-		_, _, err := r.Upstream(context.Background(), src, "", "", "s00")
-		Expect(err).To(HaveOccurred())
-
-		Expect(testutil.WriteFiles(src, map[string]string{"s00/SKILL.md": testutil.SkillMD("s00", "upstream", "")})).To(Succeed())
-		_, up, err := r.Upstream(context.Background(), src, "", "", "s00")
-		Expect(err).NotTo(HaveOccurred(), "the failure is not remembered")
-		Expect(up.Path).To(Equal("s00"))
-	})
-
 	It("rejects skills without directories", func() {
 		res := a.NewResolver().ResolveAll(context.Background(), []install.Found{{Name: "empty"}}, app.AdoptOptions{From: "x"})
 		Expect(res[0].Err).To(MatchError(ContainSubstring("has no directories")))
+	})
+})
+
+var _ = Describe("Resolver cache", func() {
+	var (
+		m     app.Memo
+		calls int
+	)
+	BeforeEach(func() { m, calls = app.Memo{}, 0 })
+
+	It("remembers failures", func() {
+		fail := func() (string, error) { calls++; return "", errors.New("unreachable") }
+		_, err := m.Get(context.Background(), "k", fail)
+		Expect(err).To(MatchError("unreachable"))
+		_, err = m.Get(context.Background(), "k", fail)
+		Expect(err).To(MatchError("unreachable"))
+		Expect(calls).To(Equal(1))
+	})
+
+	It("computes again for a live caller after another caller's cancellation", func() {
+		cancelled, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := m.Get(cancelled, "k", func() (string, error) { calls++; return "", cancelled.Err() })
+		Expect(err).To(MatchError(context.Canceled))
+		v, err := m.Get(context.Background(), "k", func() (string, error) { calls++; return "ok", nil })
+		Expect(err).NotTo(HaveOccurred())
+		Expect(v).To(Equal("ok"))
+		Expect(calls).To(Equal(2))
+	})
+
+	It("forgets a computation that panicked", func() {
+		Expect(func() {
+			_, _ = m.Get(context.Background(), "k", func() (string, error) { panic("boom") })
+		}).To(PanicWith("boom"))
+		v, err := m.Get(context.Background(), "k", func() (string, error) { return "ok", nil })
+		Expect(err).NotTo(HaveOccurred())
+		Expect(v).To(Equal("ok"))
 	})
 })

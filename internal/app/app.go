@@ -207,13 +207,6 @@ type Candidate struct {
 	Identical bool
 }
 
-// Candidates looks up skills with the same name as f in the known
-// repositories. Identical copies come first, then repositories in registry
-// order (user repositories, then by popularity).
-func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, error) {
-	return a.NewResolver().Candidates(ctx, f)
-}
-
 // AdoptOptions controls how ResolveAdopt chooses the source of a skill.
 type AdoptOptions struct {
 	// From, Ref and Path name the source explicitly. Without From the known
@@ -243,18 +236,6 @@ func (e *NoSourceError) Error() string {
 		return fmt.Sprintf("%s differs from its only source, %s", e.Name, e.Candidates[0].Entry.Repo.Name)
 	}
 	return fmt.Sprintf("%d repositories contain %s and none matches the local copy exactly", len(e.Candidates), e.Name)
-}
-
-// ResolveAdopt builds the request that adopts f from its upstream source. See
-// Resolver.ResolveAdopt; use a Resolver to adopt several skills.
-func (a *App) ResolveAdopt(ctx context.Context, f install.Found, opts AdoptOptions) (install.AdoptRequest, error) {
-	return a.NewResolver().ResolveAdopt(ctx, f, opts)
-}
-
-// Upstream fetches src and returns the skill at skillPath, or the skill named
-// name when skillPath is empty.
-func (a *App) Upstream(ctx context.Context, src, ref, skillPath, name string) (*source.Checkout, *skill.Skill, error) {
-	return a.NewResolver().Upstream(ctx, src, ref, skillPath, name)
 }
 
 // FindUnmanaged returns the unmanaged skill with the given name.

@@ -39,6 +39,7 @@ type (
 	upstreamMsg struct {
 		co     *source.Checkout
 		up     *skill.Skill
+		ident  bool // up is identical to the local copy
 		skills []skill.Skill
 		err    error
 	}
@@ -58,7 +59,7 @@ type adoptScreen struct {
 	env    *env
 	in     *install.Installer
 	found  install.Found
-	res    *app.Resolver
+	res    *app.Resolver // shared by the lookups between Init and adopting
 	step   adoptStep
 	spin   spinner.Model
 	list   *pickList
@@ -79,7 +80,7 @@ func newAdoptScreen(e *env, in *install.Installer, f install.Found) *adoptScreen
 	ref := newInput()
 	ref.Prompt = "branch/tag (optional): "
 	ref.Width = 30
-	return &adoptScreen{env: e, in: in, found: f, res: e.app.NewResolver(), spin: newSpinner(), inputs: []textinput.Model{src, ref}}
+	return &adoptScreen{env: e, in: in, found: f, spin: newSpinner(), inputs: []textinput.Model{src, ref}}
 }
 
 func (s *adoptScreen) Title() string { return "Manage " + s.found.Name }
@@ -98,6 +99,8 @@ func (s *adoptScreen) Help() string {
 
 func (s *adoptScreen) Init() tea.Cmd {
 	s.step = adoptFinding
+	// A new Resolver each time, so going back looks at the files again.
+	s.res = s.env.app.NewResolver()
 	e, f, res := s.env, s.found, s.res
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
 		cands, err := res.Candidates(e.ctx, f)
@@ -127,26 +130,34 @@ func (s *adoptScreen) sourceList(cands []app.Candidate) {
 
 func (s *adoptScreen) loadUpstream(src, ref, path string) tea.Cmd {
 	s.step, s.err = adoptLoading, nil
-	e, name, res := s.env, s.found.Name, s.res
+	e, name, res, local := s.env, s.found.Name, s.res, s.found.Dirs[0]
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
 		if path == "" {
 			// Unknown location: list the repository so the user can pick.
-			co, skills, err := e.app.Load(e.ctx, src, ref, false)
+			co, skills, err := res.Load(e.ctx, src, ref)
 			return upstreamMsg{co: co, skills: skills, err: err}
 		}
-		// The candidate's repository was loaded by Init already.
+		// Reuses the repository and hashes from Init when they are known.
 		co, up, err := res.Upstream(e.ctx, src, ref, path, name)
-		return upstreamMsg{co: co, up: up, err: err}
+		if err != nil {
+			return upstreamMsg{err: err}
+		}
+		return upstreamMsg{co: co, up: up, ident: res.Identical(up.Dir, local)}
 	}))
 }
 
-func (s *adoptScreen) chooseUpstream(co *source.Checkout, up *skill.Skill) {
-	s.co, s.up = co, up
-	if h, err := skill.Hash(up.Dir); err == nil {
-		if l, err := skill.Hash(s.found.Dirs[0]); err == nil {
-			s.ident = h == l
-		}
-	}
+// pickUpstream compares a skill picked from a repository listing with the
+// local copy in the background, then continues like loadUpstream.
+func (s *adoptScreen) pickUpstream(co *source.Checkout, up *skill.Skill) tea.Cmd {
+	s.step, s.err = adoptLoading, nil
+	res, local := s.res, s.found.Dirs[0]
+	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+		return upstreamMsg{co: co, up: up, ident: res.Identical(up.Dir, local)}
+	}))
+}
+
+func (s *adoptScreen) chooseUpstream(co *source.Checkout, up *skill.Skill, ident bool) {
+	s.co, s.up, s.ident = co, up, ident
 	var items []pickItem
 	for _, t := range install.AvailableTracking(*up) {
 		items = append(items, pickItem{Title: trackingLabel(t), Desc: adoptTrackingDesc(t, s.found, up), Value: t})
@@ -202,11 +213,13 @@ func (s *adoptScreen) Update(msg tea.Msg) tea.Cmd {
 	case upstreamMsg:
 		if msg.err != nil {
 			s.err = msg.err
+			// The Resolver remembers the failure; let a retry fetch again.
+			s.res = s.env.app.NewResolver()
 			s.step = adoptOther
 			return s.inputs[s.focus].Focus()
 		}
 		if msg.up != nil {
-			s.chooseUpstream(msg.co, msg.up)
+			s.chooseUpstream(msg.co, msg.up, msg.ident)
 			return nil
 		}
 		s.co = msg.co
@@ -293,7 +306,7 @@ func (s *adoptScreen) key(k tea.KeyMsg) tea.Cmd {
 		case "enter":
 			if it, ok := s.list.Current(); ok {
 				sk := it.Value.(skill.Skill)
-				s.chooseUpstream(s.co, &sk)
+				return s.pickUpstream(s.co, &sk)
 			}
 		}
 	case adoptTracking:

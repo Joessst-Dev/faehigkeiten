@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"sort"
@@ -21,9 +22,10 @@ const adoptConcurrency = 8
 // Resolver chooses adopt sources. It reads the index once, loads and scans
 // each repository once and hashes each directory once, so resolving many
 // skills from the same repository does not repeat that work. Failures are
-// shared by concurrent callers but not remembered, so a later call retries.
-// It is safe for concurrent use. It assumes sources and local copies do not
-// change while it is used, so use one per run or per screen.
+// remembered too, except cancellations, so an unreachable repository is not
+// tried again for every skill. It is safe for concurrent use. It assumes
+// sources and local copies do not change while it is used, so use one per
+// run, and a new one to retry after a failure.
 type Resolver struct {
 	app *App
 
@@ -47,8 +49,10 @@ func (a *App) NewResolver() *Resolver {
 	return &Resolver{app: a}
 }
 
-// memo computes a value once per key, even when asked concurrently. A failed
-// computation is forgotten once its callers have its error, so it is retried.
+// memo computes a value once per key, even when asked concurrently, and
+// remembers the result. A computation that was cancelled or panicked is
+// forgotten: fn runs with the context of whoever asked first, so a waiter
+// whose own ctx is still live computes it again.
 type memo[V any] struct {
 	mu sync.Mutex
 	m  map[string]*memoEntry[V]
@@ -60,36 +64,49 @@ type memoEntry[V any] struct {
 	err  error
 }
 
-func (c *memo[V]) get(key string, fn func() (V, error)) (V, error) {
-	c.mu.Lock()
-	if c.m == nil {
-		c.m = map[string]*memoEntry[V]{}
-	}
-	e, ok := c.m[key]
-	if !ok {
-		e = &memoEntry[V]{}
-		c.m[key] = e
-	}
-	c.mu.Unlock()
-	e.once.Do(func() { e.v, e.err = fn() })
-	if e.err != nil {
+// errInterrupted is left in an entry whose computation panicked.
+var errInterrupted = errors.New("interrupted")
+
+// get returns the value for key, computing it with fn if needed. fn must use
+// ctx.
+func (c *memo[V]) get(ctx context.Context, key string, fn func() (V, error)) (V, error) {
+	for {
+		c.mu.Lock()
+		if c.m == nil {
+			c.m = map[string]*memoEntry[V]{}
+		}
+		e, ok := c.m[key]
+		if !ok {
+			e = &memoEntry[V]{}
+			c.m[key] = e
+		}
+		c.mu.Unlock()
+		e.once.Do(func() {
+			e.err = errInterrupted // kept if fn panics
+			e.v, e.err = fn()
+		})
+		if !errors.Is(e.err, errInterrupted) && !isContextErr(e.err) {
+			return e.v, e.err
+		}
 		c.mu.Lock()
 		if c.m[key] == e {
 			delete(c.m, key)
 		}
 		c.mu.Unlock()
+		if isContextErr(e.err) && ctx.Err() != nil {
+			return e.v, e.err
+		}
+		// Panicked, or cancelled through another caller's context: compute
+		// it again.
 	}
-	return e.v, e.err
 }
 
-func (c *memo[V]) len() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.m)
+func isContextErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func (r *Resolver) index(ctx context.Context) (*registry.Index, map[string]int, error) {
-	x, err := r.idx.get("", func() (indexed, error) {
+	x, err := r.idx.get(ctx, "", func() (indexed, error) {
 		idx, err := r.app.Index(ctx, false, nil)
 		if err != nil {
 			return indexed{}, err
@@ -105,28 +122,56 @@ func (r *Resolver) index(ctx context.Context) (*registry.Index, map[string]int, 
 	return x.idx, x.order, err
 }
 
-func (r *Resolver) load(ctx context.Context, src, ref string) (*source.Checkout, []skill.Skill, error) {
+// Load fetches a source and discovers its skills, like App.Load, once per
+// source and ref.
+func (r *Resolver) Load(ctx context.Context, src, ref string) (*source.Checkout, []skill.Skill, error) {
+	key := src
+	if n, err := source.Normalize(src); err == nil {
+		key = n
+	}
 	// NUL cannot appear in a URL or ref, so keys cannot collide.
-	l, err := r.loads.get(src+"\x00"+ref, func() (loaded, error) {
+	l, err := r.loads.get(ctx, key+"\x00"+ref, func() (loaded, error) {
 		co, skills, err := r.app.Load(ctx, src, ref, false)
 		return loaded{co, skills}, err
 	})
 	return l.co, l.skills, err
 }
 
-func (r *Resolver) hash(dir string) (string, error) {
-	return r.hashes.get(dir, func() (string, error) { return skill.Hash(dir) })
+// Hash returns skill.Hash of dir, once per directory.
+func (r *Resolver) Hash(dir string) (string, error) {
+	return r.hashes.get(context.Background(), dir, func() (string, error) { return skill.Hash(dir) })
+}
+
+// Identical reports whether the skill directories a and b have the same
+// content. Errors count as different.
+func (r *Resolver) Identical(a, b string) bool {
+	ha, err := r.Hash(a)
+	if err != nil {
+		return false
+	}
+	hb, err := r.Hash(b)
+	return err == nil && ha == hb
+}
+
+func checkDirs(f install.Found) error {
+	if len(f.Dirs) == 0 {
+		return fmt.Errorf("skill %s has no directories", f.Name)
+	}
+	return nil
 }
 
 // Candidates looks up skills with the same name as f in the known
 // repositories. Identical copies come first, then repositories in registry
 // order (user repositories, then by popularity).
 func (r *Resolver) Candidates(ctx context.Context, f install.Found) ([]Candidate, error) {
+	if err := checkDirs(f); err != nil {
+		return nil, err
+	}
 	idx, order, err := r.index(ctx)
 	if err != nil {
 		return nil, err
 	}
-	local, err := r.hash(f.Dirs[0])
+	local, err := r.Hash(f.Dirs[0])
 	if err != nil {
 		return nil, err
 	}
@@ -136,12 +181,12 @@ func (r *Resolver) Candidates(ctx context.Context, f install.Found) ([]Candidate
 			continue
 		}
 		c := Candidate{Entry: e}
-		if _, skills, err := r.load(ctx, e.Repo.URL, e.Repo.Ref); err == nil {
+		if _, skills, err := r.Load(ctx, e.Repo.URL, e.Repo.Ref); err == nil {
 			for _, s := range skills {
 				if s.Path != e.Path {
 					continue
 				}
-				if h, err := r.hash(s.Dir); err == nil {
+				if h, err := r.Hash(s.Dir); err == nil {
 					c.Identical = h == local
 				}
 				break
@@ -163,8 +208,8 @@ func (r *Resolver) Candidates(ctx context.Context, f install.Found) ([]Candidate
 // hash tracking; callers can compare req.Tracking with opts.Tracking. An empty
 // Tracking becomes install.DefaultAdoptTracking.
 func (r *Resolver) ResolveAdopt(ctx context.Context, f install.Found, opts AdoptOptions) (install.AdoptRequest, error) {
-	if len(f.Dirs) == 0 {
-		return install.AdoptRequest{}, fmt.Errorf("skill %s has no directories", f.Name)
+	if err := checkDirs(f); err != nil {
+		return install.AdoptRequest{}, err
 	}
 	src, ref, p := opts.From, opts.Ref, opts.Path
 	var cands []Candidate
@@ -191,12 +236,12 @@ func (r *Resolver) ResolveAdopt(ctx context.Context, f install.Found, opts Adopt
 		// The candidate check above used the repository's own ref and only the
 		// first copy; this compares what is actually tracked with every copy,
 		// since an update replaces them all, and covers explicit sources.
-		upHash, err := r.hash(up.Dir)
+		upHash, err := r.Hash(up.Dir)
 		if err != nil {
 			return install.AdoptRequest{}, err
 		}
 		for _, d := range f.Dirs {
-			local, err := r.hash(d)
+			local, err := r.Hash(d)
 			if err != nil {
 				return install.AdoptRequest{}, err
 			}
@@ -224,7 +269,7 @@ func (r *Resolver) ResolveAdopt(ctx context.Context, f install.Found, opts Adopt
 // Upstream fetches src and returns the skill at skillPath, or the skill named
 // name when skillPath is empty.
 func (r *Resolver) Upstream(ctx context.Context, src, ref, skillPath, name string) (*source.Checkout, *skill.Skill, error) {
-	co, skills, err := r.load(ctx, src, ref)
+	co, skills, err := r.Load(ctx, src, ref)
 	if err != nil {
 		return nil, nil, err
 	}
