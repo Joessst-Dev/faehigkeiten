@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"os"
 	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -27,7 +28,7 @@ var _ = Describe("Config", func() {
 	It("returns an empty config when no file exists", func() {
 		cfg, err := config.Load()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(cfg.Repos).To(BeEmpty())
+		Expect(cfg.RepoList()).To(BeEmpty())
 	})
 
 	It("round-trips repos, default agents and agent overrides", func() {
@@ -37,6 +38,20 @@ var _ = Describe("Config", func() {
 		}
 		Expect(cfg.AddRepo(config.Repo{Name: "mine", URL: "https://example.com/a.git", Ref: "dev"})).To(BeTrue())
 		Expect(cfg.Save()).To(Succeed())
+		p, err := config.Path()
+		Expect(err).NotTo(HaveOccurred())
+		data, err := os.ReadFile(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(Equal(`repos:
+  - name: mine
+    url: https://example.com/a.git
+    ref: dev
+default_agents:
+  - claude-code
+agents:
+  cursor:
+    project_dir: .cursor/rules
+`))
 
 		loaded, err := config.Load()
 		Expect(err).NotTo(HaveOccurred())

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -168,7 +169,7 @@ var _ = Describe("TUI", func() {
 
 	It("adds a repository, installs with version tracking and updates it", func() {
 		addRepo()
-		Expect(a.Config.Repos).To(HaveLen(1))
+		Expect(a.Config.RepoList()).To(HaveLen(1))
 
 		d.keys("enter") // install alpha (cursor on first skill)
 		Expect(d.view()).To(ContainSubstring("Where should skills be installed?"))
@@ -301,6 +302,67 @@ var _ = Describe("TUI", func() {
 			data, err := os.ReadFile(filepath.Join(project, ".claude", "skills", "beta", "SKILL.md"))
 			Expect(err).NotTo(HaveOccurred())
 			Expect(string(data)).To(ContainSubstring("changed by hand"))
+		})
+
+		It("looks up sources while repositories are added or removed", func() {
+			in, err := a.Installer(d.m.env.target)
+			Expect(err).NotTo(HaveOccurred())
+			f, err := app.FindUnmanaged(in, "alpha")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Run each lookup like Bubble Tea would, on its own goroutine,
+			// while this goroutine changes the configuration as the UI
+			// does. Under -race this fails if a lookup reads Config.
+			lookup := func(s screen) tea.Msg {
+				cmds := tea.BatchMsg{s.Init()}
+				if b, ok := cmds[0]().(tea.BatchMsg); ok {
+					cmds = b
+				}
+				// Run every command at once so the spinner tick does not
+				// delay the lookup; the routed message is its result.
+				got := make(chan tea.Msg, len(cmds))
+				for _, c := range cmds {
+					if c == nil {
+						continue
+					}
+					go func() {
+						defer GinkgoRecover()
+						if r, ok := c().(routed); ok {
+							got <- r.msg
+						}
+					}()
+				}
+				// A missing local repository, so an index build that sees it
+				// fails at once instead of going to the network.
+				other := filepath.Join(GinkgoT().TempDir(), "missing")
+				timeout := time.After(time.Minute)
+				tick := time.NewTicker(time.Millisecond)
+				defer tick.Stop()
+				for {
+					select {
+					case msg := <-got:
+						return msg
+					case <-timeout:
+						Fail("the lookup did not finish")
+					case <-tick.C:
+						a.Config.AddRepo(config.Repo{URL: other})
+						a.Config.RemoveRepo(other)
+					}
+				}
+			}
+
+			msg := lookup(newAdoptScreen(d.m.env, in, f))
+			Expect(msg).To(BeAssignableToTypeOf(candidatesMsg{}))
+			cands := msg.(candidatesMsg)
+			Expect(cands.err).NotTo(HaveOccurred())
+			Expect(cands.cands).NotTo(BeEmpty())
+			Expect(cands.cands[0].Entry.Repo.Name).To(Equal("fixture/skills"))
+
+			msg = lookup(newAdoptManyScreen(d.m.env, in, []install.Found{f}))
+			Expect(msg).To(BeAssignableToTypeOf(plansMsg{}))
+			plans := msg.(plansMsg)
+			Expect(plans.plans).To(HaveLen(1))
+			Expect(plans.plans[0].resolved).To(BeTrue(), plans.plans[0].reason)
 		})
 
 		It("adopts several selected skills at once, choosing only identical sources", func() {

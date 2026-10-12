@@ -103,7 +103,8 @@ func (a *App) DefaultAgents(t install.Target) []string {
 	return []string{"claude-code"}
 }
 
-// Repos returns user and builtin repositories.
+// Repos returns user and builtin repositories. It is safe to call from
+// background tasks while the configuration's repositories change.
 func (a *App) Repos() []registry.Repo { return registry.Repos(a.Config) }
 
 // Indexer returns the shared background indexer.
@@ -220,8 +221,11 @@ func (a *App) Candidates(ctx context.Context, f install.Found) ([]Candidate, err
 	if err != nil {
 		return nil, err
 	}
+	// Drop repositories removed while the index was built.
+	repos := a.Repos()
+	idx = idx.Retain(repos)
 	order := map[string]int{}
-	for i, r := range a.Repos() {
+	for i, r := range repos {
 		order[r.URL] = i
 	}
 	var out []Candidate

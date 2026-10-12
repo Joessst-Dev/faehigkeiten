@@ -39,7 +39,10 @@ type Repo struct {
 }
 
 // Builtin returns the embedded list of well-known repositories, most popular first.
-func Builtin() []Repo {
+func Builtin() []Repo { return slices.Clone(builtin()) }
+
+// builtin parses the embedded list once. The result must not be modified.
+var builtin = sync.OnceValue(func() []Repo {
 	var doc struct {
 		Repos []Repo `yaml:"repos"`
 	}
@@ -48,7 +51,7 @@ func Builtin() []Repo {
 	}
 	sort.SliceStable(doc.Repos, func(i, j int) bool { return doc.Repos[i].Stars > doc.Repos[j].Stars })
 	return doc.Repos
-}
+})
 
 // Repos returns the user's repositories followed by the builtin ones,
 // deduplicated by URL.
@@ -56,7 +59,7 @@ func Repos(cfg *config.Config) []Repo {
 	var out []Repo
 	seen := map[string]bool{}
 	if cfg != nil {
-		for _, r := range cfg.Repos {
+		for _, r := range cfg.RepoList() {
 			name := r.Name
 			if name == "" {
 				name = source.DisplayName(r.URL)
@@ -65,7 +68,7 @@ func Repos(cfg *config.Config) []Repo {
 			seen[r.URL] = true
 		}
 	}
-	for _, r := range Builtin() {
+	for _, r := range builtin() {
 		if !seen[r.URL] {
 			out = append(out, r)
 		}

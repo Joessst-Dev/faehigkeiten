@@ -49,11 +49,18 @@ var _ = Describe("Repos", func() {
 		}
 	})
 
+	It("returns a builtin list callers may change", func() {
+		b := registry.Builtin()
+		url := b[0].URL
+		b[0].URL = "changed"
+		Expect(registry.Builtin()[0].URL).To(Equal(url))
+		Expect(registry.Repos(nil)[0].URL).To(Equal(url))
+	})
+
 	It("puts user repos first and deduplicates", func() {
-		cfg := &config.Config{Repos: []config.Repo{
-			{URL: "https://github.com/me/skills"},
-			{URL: "https://github.com/anthropics/skills", Name: "mine"},
-		}}
+		cfg := &config.Config{}
+		cfg.AddRepo(config.Repo{URL: "https://github.com/me/skills"})
+		cfg.AddRepo(config.Repo{URL: "https://github.com/anthropics/skills", Name: "mine"})
 		repos := registry.Repos(cfg)
 		Expect(repos[0].Name).To(Equal("me/skills"))
 		Expect(repos[0].Custom).To(BeTrue())

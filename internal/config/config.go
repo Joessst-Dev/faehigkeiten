@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,11 +36,42 @@ type AgentOverride struct {
 	GlobalDir  string `yaml:"global_dir,omitempty"`
 }
 
-// Config is the persisted user configuration.
+// Config is the persisted user configuration. Only its repositories may
+// change once background tasks can see it; the other fields are set when it
+// is loaded.
 type Config struct {
+	DefaultAgents []string
+	Agents        map[string]AgentOverride
+
+	// repos may change while background tasks read it, so it is only
+	// reached through AddRepo, RemoveRepo and RepoList.
+	mu    sync.Mutex
+	repos []Repo
+}
+
+// fileConfig is the on-disk form of Config.
+type fileConfig struct {
 	Repos         []Repo                   `yaml:"repos,omitempty"`
 	DefaultAgents []string                 `yaml:"default_agents,omitempty"`
 	Agents        map[string]AgentOverride `yaml:"agents,omitempty"`
+}
+
+// MarshalYAML implements yaml.Marshaler.
+func (c *Config) MarshalYAML() (any, error) {
+	return fileConfig{Repos: c.RepoList(), DefaultAgents: c.DefaultAgents, Agents: c.Agents}, nil
+}
+
+// UnmarshalYAML implements yaml.Unmarshaler.
+func (c *Config) UnmarshalYAML(n *yaml.Node) error {
+	var f fileConfig
+	if err := n.Decode(&f); err != nil {
+		return err
+	}
+	c.DefaultAgents, c.Agents = f.DefaultAgents, f.Agents
+	c.mu.Lock()
+	c.repos = f.Repos
+	c.mu.Unlock()
+	return nil
 }
 
 // Dir returns the configuration directory.
@@ -123,18 +155,30 @@ func (c *Config) SaveFile(p string) error {
 
 // AddRepo adds r unless a repo with the same URL exists. It reports whether r was added.
 func (c *Config) AddRepo(r Repo) bool {
-	if slices.ContainsFunc(c.Repos, func(x Repo) bool { return x.URL == r.URL }) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if slices.ContainsFunc(c.repos, func(x Repo) bool { return x.URL == r.URL }) {
 		return false
 	}
-	c.Repos = append(c.Repos, r)
+	c.repos = append(c.repos, r)
 	return true
 }
 
 // RemoveRepo removes the repo with the given URL and reports whether it existed.
 func (c *Config) RemoveRepo(url string) bool {
-	n := len(c.Repos)
-	c.Repos = slices.DeleteFunc(c.Repos, func(x Repo) bool { return x.URL == url })
-	return len(c.Repos) != n
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := len(c.repos)
+	c.repos = slices.DeleteFunc(c.repos, func(x Repo) bool { return x.URL == url })
+	return len(c.repos) != n
+}
+
+// RepoList returns a copy of the user's repositories. It may be called while
+// another goroutine adds or removes one.
+func (c *Config) RepoList() []Repo {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.repos)
 }
 
 func marshal(v any) ([]byte, error) {
