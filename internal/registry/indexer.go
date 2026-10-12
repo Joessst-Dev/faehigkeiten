@@ -119,6 +119,14 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 	if !loaded {
 		cached, _, _ = LoadIndexAny(x.Path, x.TTL)
 	}
+	upgraded := cached != nil && cached.legacy
+	if upgraded {
+		// Old caches came from full builds, so every configured repository
+		// was indexed then, except ones added since; those are picked up by
+		// the next full build. cached is not published yet.
+		cached.markScanned(req.repos)
+		cached.legacy = false
+	}
 
 	x.mu.Lock()
 	if r := x.run; r != nil {
@@ -149,11 +157,12 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 		}
 		r := &indexRun{done: make(chan struct{}), idx: x.idx}
 		close(r.done)
-		dropped := x.idx != planned
+		changed := x.idx != planned || upgraded && planned == cached
 		x.mu.Unlock()
-		if dropped {
-			// Removed repositories were dropped and nothing needs a build
-			// that would save it. The cache is best-effort.
+		if changed {
+			// Removed repositories were dropped or an old cache was
+			// converted, and no build will save it. The cache is
+			// best-effort.
 			_ = x.save()
 		}
 		return r

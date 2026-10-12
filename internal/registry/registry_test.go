@@ -265,6 +265,25 @@ var _ = Describe("Indexer", func() {
 		Expect(f.count()).To(Equal(map[string]int{"https://x/a": 1, "https://x/b": 1, "https://x/c": 1}))
 	})
 
+	It("does not re-index repositories from a cache written before scan times were recorded", func() {
+		pinned := registry.Repo{Name: "c", URL: "https://x/c", Ref: "v1"}
+		repos = append(repos, pinned)
+		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}}],"errors":{"https://x/c":"boom"}}`
+		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
+
+		idx, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.count()).To(BeEmpty(), "b had no skills and c failed at its pinned ref")
+		Expect(idx.Errors).To(HaveKey("https://x/c"))
+
+		cached, _, err := registry.LoadIndexAny(x.Path, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(cached.Scanned).To(HaveKey("https://x/a"))
+		Expect(cached.Scanned).To(HaveKey("https://x/b"))
+		Expect(cached.Scanned).To(HaveKey("https://x/c#v1"), "the converted cache is saved")
+	})
+
 	It("serves requests made during a build before completing it", func() {
 		f.gate, f.gateURL = make(chan struct{}), "https://x/b"
 		done := x.Start(context.Background(), false, nil)

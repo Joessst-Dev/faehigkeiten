@@ -94,6 +94,10 @@ type Index struct {
 	// or not, so new repositories can be indexed without a full rebuild. It
 	// is keyed by Repo.key, so changing a repository's ref re-indexes it.
 	Scanned map[string]time.Time `json:"scanned,omitempty"`
+
+	// legacy is set on caches written before Scanned existed. Only the
+	// repositories with entries are known to be indexed; see Indexer.start.
+	legacy bool
 }
 
 // key identifies what was indexed for a repository: its URL and ref.
@@ -355,14 +359,14 @@ func LoadIndexAny(p string, ttl time.Duration) (idx *Index, fresh bool, err erro
 		idx.Errors = map[string]string{}
 	}
 	if idx.Scanned == nil {
-		// Caches written before Scanned existed: treat every repository
-		// with entries or errors as indexed at build time.
+		// Caches written before Scanned existed: repositories with entries
+		// were indexed at build time. Errors are keyed by URL without the
+		// ref, and repositories without skills left no trace, so the
+		// Indexer fills in the rest from the configured repositories.
 		idx.Scanned = map[string]time.Time{}
+		idx.legacy = true
 		for _, e := range idx.Entries {
 			idx.Scanned[e.Repo.key()] = idx.BuiltAt
-		}
-		for u := range idx.Errors {
-			idx.Scanned[u] = idx.BuiltAt
 		}
 	}
 	return idx, ttl <= 0 || time.Since(idx.BuiltAt) <= ttl, nil
