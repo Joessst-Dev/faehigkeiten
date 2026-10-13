@@ -112,6 +112,17 @@ var _ = Describe("Authentication", func() {
 	It("reports credentials the server rejects", func() {
 		useHelper("!f() { echo username=me; echo password=wrong; }; f")
 		dir := filepath.Join(GinkgoT().TempDir(), "clone")
-		Expect(source.Clone(ctx, srcURL, "", dir)).To(MatchError(transport.ErrAuthenticationRequired))
+		err := source.Clone(ctx, srcURL, "", dir)
+		Expect(err).To(MatchError(transport.ErrAuthenticationRequired))
+		Expect(err).To(MatchError(ContainSubstring("credentials from git's credential helper were rejected")))
+	})
+
+	It("refuses user names that would add lines to the credential request", func() {
+		calls := filepath.Join(tmp, "calls")
+		useHelper("!f() { echo call >> '" + calls + "'; echo username=me; echo password=secret; }; f")
+		dir := filepath.Join(GinkgoT().TempDir(), "clone")
+		injected := strings.Replace(srcURL, "://", "://x%0Ahost=example.com@", 1)
+		Expect(source.Clone(ctx, injected, "", dir)).To(MatchError(transport.ErrAuthenticationRequired))
+		Expect(calls).NotTo(BeAnExistingFile(), "the credential helper was not asked")
 	})
 })

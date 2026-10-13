@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -33,34 +34,33 @@ func newAuthenticator(ctx context.Context, src string) *authenticator {
 
 func (a *authenticator) run(op func(transport.AuthMethod) error) error {
 	err := op(a.auth)
-	if a.looked || !isAuthErr(err) {
-		return authHint(err)
+	if !a.looked && isAuthErr(err) {
+		a.looked = true
+		if a.auth = credentials(a.ctx, a.src); a.auth != nil {
+			err = op(a.auth)
+		}
 	}
-	a.looked = true
-	if a.auth = credentials(a.ctx, a.src); a.auth == nil {
-		return authHint(err)
+	if !isAuthErr(err) {
+		return err
 	}
-	return authHint(op(a.auth))
+	if a.auth != nil {
+		return hintedErr{err, "the credentials from git's credential helper were rejected; update the stored token or password"}
+	}
+	return hintedErr{err, "store credentials with a git credential helper, e.g. by cloning the repository once with git, or use an SSH URL"}
 }
 
 func isAuthErr(err error) bool {
 	return errors.Is(err, transport.ErrAuthenticationRequired) || errors.Is(err, transport.ErrAuthorizationFailed)
 }
 
-type hintedErr struct{ error }
-
-func (e hintedErr) Error() string {
-	return e.error.Error() + " (store credentials with a git credential helper, e.g. by cloning the repository once with git, or use an SSH URL)"
+type hintedErr struct {
+	error
+	hint string
 }
+
+func (e hintedErr) Error() string { return e.error.Error() + " (" + e.hint + ")" }
 
 func (e hintedErr) Unwrap() error { return e.error }
-
-func authHint(err error) error {
-	if !isAuthErr(err) {
-		return err
-	}
-	return hintedErr{err}
-}
 
 // credentials asks `git credential fill` for the username and password of
 // an HTTPS source. It never prompts and returns nil when git is missing or
@@ -73,8 +73,16 @@ func credentials(ctx context.Context, src string) transport.AuthMethod {
 	if secure := u.Scheme == "https" || (u.Scheme == "http" && isLoopback(u.Hostname())); !secure {
 		return nil
 	}
-	req := "url=" + (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String() + "\n"
-	if name := u.User.Username(); name != "" {
+	addr := (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String()
+	name := u.User.Username()
+	// A decoded control character (e.g. %0A in the URL's user) would add
+	// lines to the request, such as a host= line asking for another host's
+	// credentials. git refuses such values too.
+	if strings.ContainsFunc(addr+name, unicode.IsControl) {
+		return nil
+	}
+	req := "url=" + addr + "\n"
+	if name != "" {
 		req += "username=" + name + "\n"
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
