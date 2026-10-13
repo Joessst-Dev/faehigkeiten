@@ -193,6 +193,20 @@ var _ = Describe("Index", func() {
 		Expect(idx.Retain([]registry.Repo{moved}).Entries).To(HaveLen(2), "old entries stay until re-indexed")
 	})
 
+	It("labels entries with the current repository details", func() {
+		idx := registry.Build(context.Background(), f, repos[:2], false, nil)
+		renamed := repos[0]
+		renamed.Name = "renamed"
+		Expect(idx.Retain(repos[:2])).To(BeIdenticalTo(idx), "unchanged repositories need no copy")
+		out := idx.Retain([]registry.Repo{renamed, repos[1]})
+		for _, e := range out.Entries {
+			if e.Repo.URL == renamed.URL {
+				Expect(e.Repo.Name).To(Equal("renamed"))
+			}
+		}
+		Expect(idx.Entries[0].Repo.Name).NotTo(Equal("renamed"), "the original is untouched")
+	})
+
 	It("loads caches written before scan times were recorded", func() {
 		p := filepath.Join(GinkgoT().TempDir(), "index.json")
 		Expect(os.WriteFile(p, []byte(`{"built_at":"2020-01-01T00:00:00Z","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}}],"errors":{"https://x/down":"x"}}`), 0o644)).To(Succeed())

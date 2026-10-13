@@ -248,27 +248,38 @@ func (idx *Index) Clone() *Index {
 }
 
 // Retain returns a copy of idx without entries and errors of repositories
-// that are no longer in repos, or idx itself when nothing is dropped.
+// that are no longer in repos, and with entries labelled with the current
+// details of their repository (such as a renamed one), or idx itself when
+// nothing changes.
 func (idx *Index) Retain(repos []Repo) *Index {
-	keep, keepKey := map[string]bool{}, map[string]bool{}
+	keep, current := map[string]bool{}, map[string]Repo{}
 	for _, r := range repos {
-		keep[r.URL], keepKey[r.key()] = true, true
+		keep[r.URL], current[r.key()] = true, r
 	}
-	if !idx.hasOther(keep, keepKey) {
-		return idx // nothing to drop: avoid copying
+	if !idx.hasOther(keep, current) {
+		return idx // nothing to change: avoid copying
 	}
 	out := idx.Clone()
 	out.Entries = slices.DeleteFunc(out.Entries, func(e Entry) bool { return !keep[e.Repo.URL] })
+	for i, e := range out.Entries {
+		if r, ok := current[e.Repo.key()]; ok {
+			out.Entries[i].Repo = r
+		}
+	}
 	maps.DeleteFunc(out.Errors, func(u, _ string) bool { return !keep[u] })
-	maps.DeleteFunc(out.Scanned, func(k string, _ time.Time) bool { return !keepKey[k] })
+	maps.DeleteFunc(out.Scanned, func(k string, _ time.Time) bool { _, ok := current[k]; return !ok })
 	return out
 }
 
 // hasOther reports whether idx holds anything outside keep (by URL) and
-// keepKey (by Repo.key).
-func (idx *Index) hasOther(keep, keepKey map[string]bool) bool {
+// current (by Repo.key), or entries whose repository details differ from
+// current.
+func (idx *Index) hasOther(keep map[string]bool, current map[string]Repo) bool {
 	for _, e := range idx.Entries {
 		if !keep[e.Repo.URL] {
+			return true
+		}
+		if r, ok := current[e.Repo.key()]; ok && r != e.Repo {
 			return true
 		}
 	}
@@ -278,7 +289,7 @@ func (idx *Index) hasOther(keep, keepKey map[string]bool) bool {
 		}
 	}
 	for k := range idx.Scanned {
-		if !keepKey[k] {
+		if _, ok := current[k]; !ok {
 			return true
 		}
 	}

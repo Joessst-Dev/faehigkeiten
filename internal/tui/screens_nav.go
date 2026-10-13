@@ -36,6 +36,7 @@ const (
 	menuInstalled = "installed"
 	menuUpdates   = "updates"
 	menuTarget    = "target"
+	menuSettings  = "settings"
 	menuQuit      = "quit"
 )
 
@@ -47,6 +48,7 @@ func newMenu(e *env) *menuScreen {
 		{Title: "Installed skills", Desc: "Show and remove skills installed in the current target", Value: menuInstalled},
 		{Title: "Check for updates", Desc: "Compare tracked skills by version or content hash", Value: menuUpdates},
 		{Title: "Change target", Desc: "Switch between a project directory and the global scope", Value: menuTarget},
+		{Title: "Settings", Desc: "Default agents, agent directories and repositories", Value: menuSettings},
 		{Title: "Quit", Value: menuQuit},
 	}, false)}
 }
@@ -84,6 +86,8 @@ func (s *menuScreen) Update(msg tea.Msg) tea.Cmd {
 			return push(newUpdatesScreen(s.env))
 		case menuTarget:
 			return push(newTargetScreen(s.env))
+		case menuSettings:
+			return push(newSettingsScreen(s.env))
 		case menuQuit:
 			return tea.Quit
 		}
@@ -270,8 +274,11 @@ func (s *reposScreen) Update(msg tea.Msg) tea.Cmd {
 			s.msg = "builtin repositories cannot be removed"
 			return nil
 		}
-		s.env.app.Config.RemoveRepo(r.URL)
-		if err := s.env.app.Config.Save(); err != nil {
+		err := commit(s.env, func(cfg *config.Config) error {
+			cfg.RemoveRepo(r.URL)
+			return nil
+		})
+		if err != nil {
 			s.msg = err.Error()
 			return nil
 		}
@@ -299,24 +306,19 @@ func (s *reposScreen) View() string {
 // ---- add repository ----
 
 type addRepoScreen struct {
-	env    *env
-	inputs []textinput.Model
-	focus  int
-	err    error
+	env  *env
+	form form
 }
 
 func newAddRepoScreen(e *env) *addRepoScreen {
-	src := newInput()
-	src.Prompt = "source: "
-	src.Placeholder = "owner/repo, https://…, git@…, or ./local/dir"
+	src := formInput("source: ", "", "owner/repo, https://…, git@…, or ./local/dir")
 	src.Width = 60
-	ref := newInput()
-	ref.Prompt = "branch/tag (optional): "
+	ref := formInput("branch/tag (optional): ", "", "")
 	ref.Width = 30
-	return &addRepoScreen{env: e, inputs: []textinput.Model{src, ref}}
+	return &addRepoScreen{env: e, form: form{inputs: []textinput.Model{src, ref}}}
 }
 
-func (s *addRepoScreen) Init() tea.Cmd { return s.inputs[0].Focus() }
+func (s *addRepoScreen) Init() tea.Cmd { return s.form.Focus() }
 func (s *addRepoScreen) Title() string { return "Add repository" }
 func (s *addRepoScreen) Help() string  { return "tab next field • enter add & open" }
 
@@ -328,37 +330,27 @@ func (s *addRepoScreen) Update(msg tea.Msg) tea.Cmd {
 	switch k.String() {
 	case "esc":
 		return pop
-	case "tab", "shift+tab", "down", "up":
-		s.inputs[s.focus].Blur()
-		s.focus = (s.focus + 1) % len(s.inputs)
-		return s.inputs[s.focus].Focus()
 	case "enter":
-		src, err := source.Normalize(s.inputs[0].Value())
+		src, err := source.Normalize(s.form.value(0))
 		if err != nil {
-			s.err = err
+			s.form.err = err
 			return nil
 		}
-		ref := strings.TrimSpace(s.inputs[1].Value())
-		cfg := s.env.app.Config
+		ref := s.form.value(1)
 		name := source.DisplayName(src)
-		if cfg.AddRepo(config.Repo{Name: name, URL: src, Ref: ref}) {
-			if err := cfg.Save(); err != nil {
-				s.err = err
-				return nil
-			}
+		err = commit(s.env, func(cfg *config.Config) error {
+			cfg.AddRepo(config.Repo{Name: name, URL: src, Ref: ref})
+			return nil
+		})
+		if err != nil {
+			s.form.err = err
+			return nil
 		}
 		return replace(newSkillsScreen(s.env, name, src, ref, ""))
 	}
-	var cmd tea.Cmd
-	s.inputs[s.focus], cmd = s.inputs[s.focus].Update(k)
-	return cmd
+	return s.form.Update(k)
 }
 
 func (s *addRepoScreen) View() string {
-	v := "Add a skill repository. It is saved to your configuration and shows up\nin the repository list.\n\n" +
-		s.inputs[0].View() + "\n" + s.inputs[1].View()
-	if s.err != nil {
-		v += "\n\n" + errStyle.Render(s.err.Error())
-	}
-	return v
+	return s.form.View("Add a skill repository. It is saved to your configuration and shows up\nin the repository list.")
 }

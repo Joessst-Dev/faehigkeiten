@@ -87,6 +87,9 @@ func (d *driver) view() string { return d.m.View() }
 
 var _ = BeforeSuite(func() { cursorMode = cursor.CursorStatic })
 
+// absDir is an absolute path on every platform.
+var absDir, _ = filepath.Abs(filepath.Join(string(filepath.Separator), "abs", "x"))
+
 var _ = Describe("TUI", func() {
 	var (
 		d       *driver
@@ -494,6 +497,197 @@ var _ = Describe("TUI", func() {
 		Expect(strings.Count(v, "alpha")).To(BeZero())
 	})
 
+	Describe("settings", func() {
+		saved := func() *config.Config {
+			cfg, err := config.Load()
+			Expect(err).NotTo(HaveOccurred())
+			return cfg
+		}
+
+		BeforeEach(func() {
+			d.keys("G", "up", "enter") // Settings
+			Expect(d.view()).To(ContainSubstring("detect agents in the target"))
+		})
+
+		It("sets and clears the default agents", func() {
+			d.keys("enter", "down", "space", "enter") // Default agents: Universal (.agents)
+			Expect(saved().DefaultAgentList()).To(Equal([]string{"agents"}))
+			Expect(a.DefaultAgents(install.Target{Scope: agent.ScopeProject, ProjectRoot: project})).To(Equal([]string{"agents"}))
+			Expect(d.view()).To(ContainSubstring("Preselected when installing: agents"))
+
+			d.keys("enter", "c", "enter")
+			Expect(saved().DefaultAgentList()).To(BeEmpty())
+		})
+
+		It("overrides builtin agents and resets them", func() {
+			d.keys("down", "enter")                           // Agents
+			d.keys("enter", "tab", ".claude/custom", "enter") // Claude Code: project dir
+			Expect(saved().AgentOverrides()).To(HaveKeyWithValue("claude-code", config.AgentOverride{ProjectDir: ".claude/custom"}))
+			c, _ := a.Agents.Get("claude-code")
+			Expect(c.ProjectDir).To(Equal(".claude/custom"))
+			Expect(d.view()).To(ContainSubstring("override"))
+
+			d.keys("d")
+			Expect(saved().AgentOverrides()).To(BeEmpty())
+			c, _ = a.Agents.Get("claude-code")
+			Expect(c.ProjectDir).To(Equal(".claude/skills"))
+		})
+
+		It("adds and deletes custom agents", func() {
+			d.keys("down", "enter", "n") // Agents → new
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("the id is required"))
+			d.keys("claude-code", "enter")
+			Expect(d.view()).To(ContainSubstring("already exists"))
+			d.send(tea.KeyMsg{Type: tea.KeyCtrlU})
+			d.keys("mine", "enter")
+			Expect(d.view()).To(ContainSubstring("set a project or global directory"))
+			d.keys("tab", "Mine", "tab", ".mine/skills", "enter")
+			m, ok := a.Agents.Get("mine")
+			Expect(ok).To(BeTrue())
+			Expect(m.Name).To(Equal("Mine"))
+			Expect(d.view()).To(ContainSubstring("custom"))
+
+			d.keys("esc", "up", "enter", "/", "Mine", "enter", "space", "enter") // Default agents: mine
+			Expect(saved().DefaultAgentList()).To(Equal([]string{"mine"}))
+			d.keys("down", "enter", "/", "Mine", "enter", "d")
+			Expect(d.view()).To(ContainSubstring("deleted mine"))
+			_, ok = a.Agents.Get("mine")
+			Expect(ok).To(BeFalse())
+			Expect(saved().AgentOverrides()).To(BeEmpty())
+			Expect(saved().DefaultAgentList()).To(BeEmpty())
+		})
+
+		It("derives the name of an edited repository from its new source", func() {
+			d.keys("down", "down", "enter", "n", "acme/one", "enter") // Repositories
+			d.keys("enter")
+			d.send(tea.KeyMsg{Type: tea.KeyCtrlU})
+			d.keys("acme/two", "enter")
+			Expect(saved().RepoList()).To(Equal([]config.Repo{{Name: "acme/two", URL: "https://github.com/acme/two"}}))
+		})
+
+		It("reports a repository removed while it is edited", func() {
+			d.keys("down", "down", "enter", "n", "acme/one", "enter", "enter")
+			cfg := saved() // removed outside the TUI
+			cfg.RemoveRepo("https://github.com/acme/one")
+			Expect(cfg.Save()).To(Succeed())
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("no longer configured"))
+		})
+
+		It("keeps the configuration unchanged when it cannot be saved", func() {
+			blocker := filepath.Join(GinkgoT().TempDir(), "file")
+			Expect(os.WriteFile(blocker, nil, 0o644)).To(Succeed())
+			GinkgoT().Setenv(config.EnvConfigDir, filepath.Join(blocker, "config"))
+
+			d.keys("enter", "space", "enter") // Default agents: Claude Code
+			Expect(d.view()).To(ContainSubstring("Agents preselected when installing"), "stays on the screen")
+			Expect(a.Config.DefaultAgentList()).To(BeEmpty())
+
+			d.keys("esc", "down", "enter", "enter", "tab", ".x", "enter") // Agents: Claude Code
+			Expect(a.Config.AgentOverrides()).To(BeEmpty())
+			c, _ := a.Agents.Get("claude-code")
+			Expect(c.ProjectDir).To(Equal(".claude/skills"))
+		})
+
+		It("drops default agents that are not known unless they are checked", func() {
+			a.Config.SetDefaultAgents([]string{"ghost", "claude-code"})
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("not a known agent"))
+			d.keys("enter")
+			Expect(saved().DefaultAgentList()).To(Equal([]string{"claude-code"}))
+
+			a.Config.SetDefaultAgents([]string{"ghost"})
+			d.keys("enter", "G", "space", "enter")
+			Expect(saved().DefaultAgentList()).To(Equal([]string{"ghost"}))
+		})
+
+		It("clears only the agents the filter shows", func() {
+			d.keys("enter", "a", "/", "cursor", "enter", "c", "enter")
+			ids := saved().DefaultAgentList()
+			Expect(ids).To(ContainElement("claude-code"))
+			Expect(ids).NotTo(ContainElement("cursor"))
+		})
+
+		It("keeps changes made to the file outside the TUI", func() {
+			cfg := saved()
+			cfg.AddRepo(config.Repo{Name: "outside", URL: "https://github.com/acme/outside"})
+			Expect(cfg.Save()).To(Succeed())
+
+			d.keys("enter", "space", "enter") // Default agents: Claude Code
+			Expect(saved().RepoList()).To(HaveLen(1))
+			Expect(saved().DefaultAgentList()).To(Equal([]string{"claude-code"}))
+			Expect(a.Config.RepoList()).To(HaveLen(1), "the running app sees it too")
+		})
+
+		DescribeTable("checks agent directories",
+			func(project, global, errText string) {
+				d.keys("down", "enter", "n", "mine", "tab", "tab", project, "tab", global, "enter")
+				if errText != "" {
+					Expect(d.view()).To(ContainSubstring(errText))
+					Expect(saved().AgentOverrides()).To(BeEmpty())
+					return
+				}
+				Expect(saved().AgentOverrides()).To(HaveKey("mine"))
+			},
+			Entry("outside the project", "../x", "", "must be a path inside the project"),
+			Entry("absolute project dir", absDir, "", "must be a path inside the project"),
+			Entry("home shorthand in project", "~/x", "", "must be a path inside the project"),
+			Entry("outside home", "", "../x", "relative to your home directory"),
+			Entry("absolute global dir", "", absDir, ""),
+			Entry("relative dirs", ".mine/skills", ".mine/skills", ""),
+		)
+
+		It("drops a leading ~/ from global directories", func() {
+			d.keys("down", "enter", "n", "mine", "tab", "tab", "tab", "~/.mine/skills", "enter")
+			Expect(saved().AgentOverrides()).To(HaveKeyWithValue("mine", config.AgentOverride{GlobalDir: ".mine/skills"}))
+		})
+
+		It("rejects agent IDs that cannot be used in agent lists", func() {
+			d.keys("down", "enter", "n", "my,agent", "enter")
+			Expect(d.view()).To(ContainSubstring("may only contain"))
+		})
+
+		It("warns before changing or deleting agents that have installed skills", func() {
+			lf := lockfile()
+			lf.Upsert(lock.Entry{Name: "alpha", Source: origin, Path: "skills/alpha", Agents: []string{"claude-code", "mine"}, Tracking: lock.TrackNone})
+			Expect(lf.Save()).To(Succeed())
+
+			d.keys("down", "enter", "enter") // Agents: Claude Code
+			Expect(d.view()).To(ContainSubstring("Skills installed for claude-code (alpha)"))
+			d.keys("tab", ".claude/custom", "enter")
+			d.keys("d")
+			Expect(d.view()).To(ContainSubstring("Press d again"))
+			Expect(saved().AgentOverrides()).To(HaveKey("claude-code"))
+			d.keys("d")
+			Expect(saved().AgentOverrides()).To(BeEmpty())
+
+			d.keys("n", "mine", "tab", "tab", ".mine", "enter", "/", "mine", "enter", "d")
+			Expect(d.view()).To(ContainSubstring("can no longer be updated"))
+			d.keys("down", "d") // moving on cancels
+			Expect(saved().AgentOverrides()).To(HaveKey("mine"))
+			d.keys("d", "d")
+			Expect(saved().AgentOverrides()).To(BeEmpty())
+		})
+
+		It("adds, edits and removes repositories", func() {
+			d.keys("down", "down", "enter") // Repositories
+			Expect(d.view()).To(ContainSubstring("no repositories yet"))
+			d.keys("n", origin, "tab", "dev", "enter")
+			Expect(saved().RepoList()).To(Equal([]config.Repo{{Name: "origin", URL: origin, Ref: "dev"}}))
+			Expect(d.view()).To(ContainSubstring(origin + " @ dev"))
+
+			d.keys("enter", "tab", "tab", "Mine", "enter")
+			Expect(saved().RepoList()).To(Equal([]config.Repo{{Name: "Mine", URL: origin, Ref: "dev"}}))
+
+			d.keys("n", origin, "enter")
+			Expect(d.view()).To(ContainSubstring("already configured"))
+			d.keys("esc", "d")
+			Expect(saved().RepoList()).To(BeEmpty())
+			Expect(a.Config.RepoList()).To(BeEmpty())
+		})
+	})
+
 	DescribeTable("fills the whole terminal",
 		func(width, height int, footer string, keys ...string) {
 			d.send(tea.WindowSizeMsg{Width: width, Height: height})
@@ -510,6 +704,8 @@ var _ = Describe("TUI", func() {
 		Entry("menu, small terminal", 60, 15, "q quit"),
 		Entry("long repository list is clipped", 80, 20, "enter open", "enter"),
 		Entry("tiny terminal", 30, 8, "enter open", "enter"),
+		Entry("settings, tiny terminal", 30, 8, "enter select", "G", "up", "enter"),
+		Entry("agents, small terminal", 60, 12, "enter edit", "G", "up", "enter", "down", "enter"),
 	)
 
 	It("quits from the menu", func() {

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -36,17 +37,14 @@ type AgentOverride struct {
 	GlobalDir  string `yaml:"global_dir,omitempty"`
 }
 
-// Config is the persisted user configuration. Only its repositories may
-// change once background tasks can see it; the other fields are set when it
-// is loaded.
+// Config is the persisted user configuration. Its fields may change while
+// background tasks read them, so they are only reached through methods that
+// hold mu.
 type Config struct {
-	DefaultAgents []string
-	Agents        map[string]AgentOverride
-
-	// repos may change while background tasks read it, so it is only
-	// reached through AddRepo, RemoveRepo and RepoList.
-	mu    sync.Mutex
-	repos []Repo
+	mu            sync.Mutex
+	repos         []Repo
+	defaultAgents []string
+	agents        map[string]AgentOverride
 }
 
 // fileConfig is the on-disk form of Config.
@@ -58,7 +56,9 @@ type fileConfig struct {
 
 // MarshalYAML implements yaml.Marshaler.
 func (c *Config) MarshalYAML() (any, error) {
-	return fileConfig{Repos: c.RepoList(), DefaultAgents: c.DefaultAgents, Agents: c.Agents}, nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return fileConfig{Repos: slices.Clone(c.repos), DefaultAgents: slices.Clone(c.defaultAgents), Agents: maps.Clone(c.agents)}, nil
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler.
@@ -67,9 +67,8 @@ func (c *Config) UnmarshalYAML(n *yaml.Node) error {
 	if err := n.Decode(&f); err != nil {
 		return err
 	}
-	c.DefaultAgents, c.Agents = f.DefaultAgents, f.Agents
 	c.mu.Lock()
-	c.repos = f.Repos
+	c.repos, c.defaultAgents, c.agents = f.Repos, f.DefaultAgents, f.Agents
 	c.mu.Unlock()
 	return nil
 }
@@ -179,6 +178,88 @@ func (c *Config) RepoList() []Repo {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return slices.Clone(c.repos)
+}
+
+// Errors returned by UpdateRepo.
+var (
+	ErrRepoNotFound = errors.New("repository is not configured")
+	ErrRepoExists   = errors.New("repository is already configured")
+)
+
+// UpdateRepo replaces the repo with URL oldURL by r. It fails with
+// ErrRepoNotFound when no such repo exists and with ErrRepoExists when
+// another repo already uses r's URL.
+func (c *Config) UpdateRepo(oldURL string, r Repo) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	i := slices.IndexFunc(c.repos, func(x Repo) bool { return x.URL == oldURL })
+	if i < 0 {
+		return ErrRepoNotFound
+	}
+	if r.URL != oldURL && slices.ContainsFunc(c.repos, func(x Repo) bool { return x.URL == r.URL }) {
+		return ErrRepoExists
+	}
+	c.repos[i] = r
+	return nil
+}
+
+// DefaultAgentList returns a copy of the agents preselected for installs.
+func (c *Config) DefaultAgentList() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.defaultAgents)
+}
+
+// SetDefaultAgents replaces the agents preselected for installs. An empty
+// list means they are detected instead.
+func (c *Config) SetDefaultAgents(ids []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(ids) == 0 {
+		c.defaultAgents = nil
+		return
+	}
+	c.defaultAgents = slices.Clone(ids)
+}
+
+// AgentOverrides returns a copy of the agent overrides keyed by agent ID.
+func (c *Config) AgentOverrides() map[string]AgentOverride {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return maps.Clone(c.agents)
+}
+
+// SetAgent stores the override for the agent with the given ID.
+func (c *Config) SetAgent(id string, o AgentOverride) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.agents == nil {
+		c.agents = map[string]AgentOverride{}
+	}
+	c.agents[id] = o
+}
+
+// RemoveAgent removes the override for id and reports whether it existed.
+func (c *Config) RemoveAgent(id string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.agents[id]; !ok {
+		return false
+	}
+	delete(c.agents, id)
+	if len(c.agents) == 0 {
+		c.agents = nil
+	}
+	return true
+}
+
+// Replace sets all settings of c to those of o, for example after o was
+// loaded from the file and changed.
+func (c *Config) Replace(o *Config) {
+	repos, defaults, agents := o.RepoList(), o.DefaultAgentList(), o.AgentOverrides()
+	c.mu.Lock()
+	c.repos, c.defaultAgents, c.agents = repos, defaults, agents
+	c.mu.Unlock()
 }
 
 func marshal(v any) ([]byte, error) {

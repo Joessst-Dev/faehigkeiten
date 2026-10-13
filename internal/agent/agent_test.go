@@ -45,10 +45,10 @@ var _ = Describe("Registry", func() {
 
 	It("applies overrides and adds custom agents", func() {
 		abs := filepath.Join(GinkgoT().TempDir(), "skills")
-		r := agent.NewRegistry(&config.Config{Agents: map[string]config.AgentOverride{
-			"claude-code": {GlobalDir: abs},
-			"my-agent":    {Name: "Mine", ProjectDir: ".mine/skills"},
-		}})
+		cfg := &config.Config{}
+		cfg.SetAgent("claude-code", config.AgentOverride{GlobalDir: abs})
+		cfg.SetAgent("my-agent", config.AgentOverride{Name: "Mine", ProjectDir: ".mine/skills"})
+		r := agent.NewRegistry(cfg)
 		c, ok := r.Get("claude-code")
 		Expect(ok).To(BeTrue())
 		Expect(c.GlobalDir).To(Equal(abs))
@@ -56,6 +56,27 @@ var _ = Describe("Registry", func() {
 		m, ok := r.Get("my-agent")
 		Expect(ok).To(BeTrue())
 		Expect(m.Name).To(Equal("Mine"))
+	})
+
+	It("reloads overrides in place", func() {
+		cfg := &config.Config{}
+		r := agent.NewRegistry(cfg)
+		cfg.SetAgent("my-agent", config.AgentOverride{ProjectDir: ".mine/skills"})
+		cfg.SetAgent("cursor", config.AgentOverride{ProjectDir: ".cursor/rules"})
+		r.Reload(cfg)
+		m, ok := r.Get("my-agent")
+		Expect(ok).To(BeTrue())
+		Expect(m.ProjectDir).To(Equal(".mine/skills"))
+		c, _ := r.Get("cursor")
+		Expect(c.ProjectDir).To(Equal(".cursor/rules"))
+
+		cfg.RemoveAgent("my-agent")
+		cfg.RemoveAgent("cursor")
+		r.Reload(cfg)
+		_, ok = r.Get("my-agent")
+		Expect(ok).To(BeFalse())
+		c, _ = r.Get("cursor")
+		Expect(c.ProjectDir).To(Equal(".cursor/skills"))
 	})
 
 	It("looks up agents by ID", func() {

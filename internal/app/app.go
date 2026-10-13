@@ -92,8 +92,8 @@ func (a *App) Installer(t install.Target) (*install.Installer, error) {
 // DefaultAgents returns the agents to preselect: the configured defaults,
 // otherwise agents detected in the target, otherwise Claude Code.
 func (a *App) DefaultAgents(t install.Target) []string {
-	if len(a.Config.DefaultAgents) > 0 {
-		return a.Config.DefaultAgents
+	if ids := a.Config.DefaultAgentList(); len(ids) > 0 {
+		return ids
 	}
 	if ids := a.Agents.Detect(t.Scope, t.ProjectRoot, t.Home); len(ids) > 0 {
 		return ids

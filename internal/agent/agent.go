@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/config"
 )
@@ -72,53 +73,75 @@ func Builtin() []Agent {
 	}
 }
 
-// Registry is the set of agents after applying user overrides.
+// Registry is the set of agents after applying user overrides. It may be
+// reloaded while other goroutines read it.
 type Registry struct {
+	mu     sync.RWMutex
 	agents []Agent
 }
 
 // NewRegistry merges the builtin agents with overrides from cfg.
 // Unknown override IDs add new agents.
 func NewRegistry(cfg *config.Config) *Registry {
+	return &Registry{agents: build(cfg)}
+}
+
+// Reload rebuilds the registry from cfg's current overrides.
+func (r *Registry) Reload(cfg *config.Config) {
+	agents := build(cfg)
+	r.mu.Lock()
+	r.agents = agents
+	r.mu.Unlock()
+}
+
+func build(cfg *config.Config) []Agent {
 	agents := Builtin()
-	if cfg != nil {
-		ids := make([]string, 0, len(cfg.Agents))
-		for id := range cfg.Agents {
-			ids = append(ids, id)
+	if cfg == nil {
+		return agents
+	}
+	overrides := cfg.AgentOverrides()
+	ids := make([]string, 0, len(overrides))
+	for id := range overrides {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		o := overrides[id]
+		idx := -1
+		for i, a := range agents {
+			if a.ID == id {
+				idx = i
+			}
 		}
-		sort.Strings(ids)
-		for _, id := range ids {
-			o := cfg.Agents[id]
-			idx := -1
-			for i, a := range agents {
-				if a.ID == id {
-					idx = i
-				}
-			}
-			if idx < 0 {
-				agents = append(agents, Agent{ID: id, Name: id})
-				idx = len(agents) - 1
-			}
-			a := &agents[idx]
-			if o.Name != "" {
-				a.Name = o.Name
-			}
-			if o.ProjectDir != "" {
-				a.ProjectDir = o.ProjectDir
-			}
-			if o.GlobalDir != "" {
-				a.GlobalDir = o.GlobalDir
-			}
+		if idx < 0 {
+			agents = append(agents, Agent{ID: id, Name: id})
+			idx = len(agents) - 1
+		}
+		a := &agents[idx]
+		if o.Name != "" {
+			a.Name = o.Name
+		}
+		if o.ProjectDir != "" {
+			a.ProjectDir = o.ProjectDir
+		}
+		if o.GlobalDir != "" {
+			a.GlobalDir = o.GlobalDir
 		}
 	}
-	return &Registry{agents: agents}
+	return agents
 }
 
 // All returns every known agent.
-func (r *Registry) All() []Agent { return append([]Agent(nil), r.agents...) }
+func (r *Registry) All() []Agent {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]Agent(nil), r.agents...)
+}
 
 // Get returns the agent with the given ID.
 func (r *Registry) Get(id string) (Agent, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	for _, a := range r.agents {
 		if a.ID == id {
 			return a, true
@@ -145,7 +168,7 @@ func (r *Registry) Lookup(ids []string) ([]Agent, error) {
 // preselect agents in the UI.
 func (r *Registry) Detect(scope Scope, projectRoot, home string) []string {
 	var ids []string
-	for _, a := range r.agents {
+	for _, a := range r.All() {
 		dir, err := a.Dir(scope, projectRoot, home)
 		if err != nil {
 			continue
