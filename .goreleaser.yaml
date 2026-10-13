@@ -82,12 +82,13 @@ homebrew_casks:
     homepage: https://github.com/Joessst-Dev/faehigkeiten
     description: TUI to install and track agent skills from skill repositories
     license: MIT
+    # The cobra format already appends "completion <shell>" to the command.
     generate_completions_from_executable:
-      args: [completion]
       shell_parameter_format: cobra
     hooks:
-      post:
-        # The binaries are not notarized; drop the quarantine flag so macOS runs them.
+      pre:
+        # The binaries are not notarized; drop the quarantine flag before Homebrew
+        # runs them to generate completions, or Gatekeeper kills them.
         install: |
           if OS.mac?
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/faehigkeiten"]
