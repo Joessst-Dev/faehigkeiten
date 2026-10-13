@@ -17,6 +17,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 )
 
 // Checkout is a skill repository available on disk.
@@ -192,13 +193,20 @@ func pull(ctx context.Context, dir string) error {
 	}
 	branch := head.Name().Short()
 	remoteRef := plumbing.NewRemoteReferenceName("origin", branch)
-	err = repo.FetchContext(ctx, &git.FetchOptions{
-		RefSpecs: []config.RefSpec{config.RefSpec("+" + head.Name().String() + ":" + remoteRef.String())},
-		Depth:    1,
-		Tags:     git.NoTags,
-		Force:    true,
+	err = withAuth(ctx, remoteURL(repo), func(auth transport.AuthMethod) error {
+		err := repo.FetchContext(ctx, &git.FetchOptions{
+			RefSpecs: []config.RefSpec{config.RefSpec("+" + head.Name().String() + ":" + remoteRef.String())},
+			Depth:    1,
+			Tags:     git.NoTags,
+			Force:    true,
+			Auth:     auth,
+		})
+		if errors.Is(err, git.NoErrAlreadyUpToDate) {
+			return nil
+		}
+		return err
 	})
-	if err != nil && !errors.Is(err, git.NoErrAlreadyUpToDate) {
+	if err != nil {
 		return err
 	}
 	ref, err := repo.Reference(remoteRef, true)
@@ -217,23 +225,38 @@ func pull(ctx context.Context, dir string) error {
 }
 
 func clone(ctx context.Context, src, ref, dir string) error {
-	opts := &git.CloneOptions{URL: src, Depth: 1, SingleBranch: true, Tags: git.NoTags}
+	cloneRef := func(name plumbing.ReferenceName) error {
+		return withAuth(ctx, src, func(auth transport.AuthMethod) error {
+			_ = os.RemoveAll(dir)
+			_, err := git.PlainCloneContext(ctx, dir, false, &git.CloneOptions{
+				URL: src, Auth: auth, ReferenceName: name, Depth: 1, SingleBranch: true, Tags: git.NoTags,
+			})
+			return err
+		})
+	}
 	if ref == "" {
-		_, err := git.PlainCloneContext(ctx, dir, false, opts)
+		return wrapCloneErr(src, cloneRef(""))
+	}
+	err := cloneRef(plumbing.NewBranchReferenceName(ref))
+	if !errors.Is(err, git.NoMatchingRefSpecError{}) {
 		return wrapCloneErr(src, err)
 	}
-	var errs []error
-	for _, name := range []plumbing.ReferenceName{plumbing.NewBranchReferenceName(ref), plumbing.NewTagReferenceName(ref)} {
-		_ = os.RemoveAll(dir)
-		o := *opts
-		o.ReferenceName = name
-		_, err := git.PlainCloneContext(ctx, dir, false, &o)
-		if err == nil {
-			return nil
+	if err := cloneRef(plumbing.NewTagReferenceName(ref)); err != nil {
+		if errors.Is(err, git.NoMatchingRefSpecError{}) {
+			return wrapCloneErr(src, fmt.Errorf("ref %q not found", ref))
 		}
-		errs = append(errs, err)
+		return wrapCloneErr(src, err)
 	}
-	return wrapCloneErr(src, fmt.Errorf("ref %q not found: %w", ref, errors.Join(errs...)))
+	return nil
+}
+
+// remoteURL returns the URL of the clone's origin remote.
+func remoteURL(repo *git.Repository) string {
+	remote, err := repo.Remote("origin")
+	if err != nil || len(remote.Config().URLs) == 0 {
+		return ""
+	}
+	return remote.Config().URLs[0]
 }
 
 func wrapCloneErr(src string, err error) error {

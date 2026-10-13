@@ -204,6 +204,16 @@ var _ = Describe("Manager", func() {
 			Expect(clones).To(HaveLen(1), "only one clone of the repository exists")
 		})
 
+		It("checks out a tag", func() {
+			h, err := repo.Head()
+			Expect(err).NotTo(HaveOccurred())
+			_, err = repo.CreateTag("v1.0.0", h.Hash(), nil)
+			Expect(err).NotTo(HaveOccurred())
+			co, err := m.Fetch(ctx, url, "v1.0.0", false)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(co.Commit).To(Equal(head()))
+		})
+
 		It("reports unknown refs", func() {
 			_, err := m.Fetch(ctx, url, "nope", false)
 			Expect(err).To(MatchError(ContainSubstring("nope")))
