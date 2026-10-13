@@ -242,7 +242,9 @@ var _ = Describe("Installer", func() {
 	})
 
 	It("skips agents that no longer support the scope when uninstalling", func() {
-		reg = agent.NewRegistry(&config.Config{Agents: map[string]config.AgentOverride{"only-global": {GlobalDir: ".x/skills"}}})
+		cfg := &config.Config{}
+		cfg.SetAgent("only-global", config.AgentOverride{GlobalDir: ".x/skills"})
+		reg = agent.NewRegistry(cfg)
 		in.Registry = reg
 		_, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}})
 		Expect(err).NotTo(HaveOccurred())

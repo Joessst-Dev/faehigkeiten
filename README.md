@@ -125,7 +125,8 @@ one records it in the lockfile **without changing its files**:
 ## Configuration
 
 `<user config dir>/faehigkeiten/config.yaml` (e.g. `~/.config/faehigkeiten/config.yaml` on Linux,
-`~/Library/Application Support/faehigkeiten/config.yaml` on macOS):
+`~/Library/Application Support/faehigkeiten/config.yaml` on macOS). Edit it by hand or under
+**Settings** in the TUI:
 
 ```yaml
 repos:                       # your own repositories (added via TUI or `fgk repo add`)
