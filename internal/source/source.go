@@ -150,8 +150,13 @@ func (m *Manager) Fetch(ctx context.Context, src, ref string, refresh bool) (*Ch
 		if !refresh {
 			return co, nil
 		}
-		if err := pull(ctx, dir); err == nil {
+		err := pull(ctx, dir)
+		if err == nil {
 			return openCheckout(src, dir)
+		}
+		if isAuthErr(err) {
+			// A fresh clone would be rejected the same way.
+			return nil, fmt.Errorf("update %s: %w", src, err)
 		}
 		// Fall back to a fresh clone if the incremental update failed.
 	}
@@ -193,7 +198,7 @@ func pull(ctx context.Context, dir string) error {
 	}
 	branch := head.Name().Short()
 	remoteRef := plumbing.NewRemoteReferenceName("origin", branch)
-	err = withAuth(ctx, remoteURL(repo), func(auth transport.AuthMethod) error {
+	err = newAuthenticator(ctx, remoteURL(repo)).run(func(auth transport.AuthMethod) error {
 		err := repo.FetchContext(ctx, &git.FetchOptions{
 			RefSpecs: []config.RefSpec{config.RefSpec("+" + head.Name().String() + ":" + remoteRef.String())},
 			Depth:    1,
@@ -225,8 +230,10 @@ func pull(ctx context.Context, dir string) error {
 }
 
 func clone(ctx context.Context, src, ref, dir string) error {
+	// The branch and tag attempts share credentials, so they are looked up once.
+	a := newAuthenticator(ctx, src)
 	cloneRef := func(name plumbing.ReferenceName) error {
-		return withAuth(ctx, src, func(auth transport.AuthMethod) error {
+		return a.run(func(auth transport.AuthMethod) error {
 			_ = os.RemoveAll(dir)
 			_, err := git.PlainCloneContext(ctx, dir, false, &git.CloneOptions{
 				URL: src, Auth: auth, ReferenceName: name, Depth: 1, SingleBranch: true, Tags: git.NoTags,

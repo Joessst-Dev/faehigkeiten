@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
 	. "github.com/onsi/ginkgo/v2"
@@ -20,6 +22,7 @@ var _ = Describe("Authentication", func() {
 	var (
 		ctx    context.Context
 		srcURL string
+		tmp    string
 	)
 
 	BeforeEach(func() {
@@ -29,8 +32,13 @@ var _ = Describe("Authentication", func() {
 		}
 		ctx = context.Background()
 		root := GinkgoT().TempDir()
-		_, err = testutil.InitRepo(filepath.Join(root, "skills"), map[string]string{"skills/a/SKILL.md": testutil.SkillMD("a", "A", "")})
+		repo, err := testutil.InitRepo(filepath.Join(root, "skills"), map[string]string{"skills/a/SKILL.md": testutil.SkillMD("a", "A", "")})
 		Expect(err).NotTo(HaveOccurred())
+		h, err := repo.Head()
+		Expect(err).NotTo(HaveOccurred())
+		_, err = repo.CreateTag("v1.0.0", h.Hash(), nil)
+		Expect(err).NotTo(HaveOccurred())
+		tmp = GinkgoT().TempDir()
 
 		backend := &cgi.Handler{
 			Path: gitBin,
@@ -74,6 +82,31 @@ var _ = Describe("Authentication", func() {
 		Expect(err).To(MatchError(transport.ErrAuthenticationRequired))
 		Expect(err).NotTo(MatchError(ContainSubstring("not found")))
 		Expect(err).To(MatchError(ContainSubstring("credential helper")))
+	})
+
+	It("looks up credentials once for the branch and tag attempts", func() {
+		calls := filepath.Join(tmp, "calls")
+		useHelper("!f() { echo call >> '" + calls + "'; echo username=me; echo password=secret; }; f")
+		dir := filepath.Join(GinkgoT().TempDir(), "clone")
+		Expect(source.Clone(ctx, srcURL, "v1.0.0", dir)).To(Succeed())
+		Expect(os.ReadFile(calls)).To(Equal([]byte("call\n")))
+	})
+
+	It("asks the helper for the user named in the URL", func() {
+		useHelper(`!f() { while read l; do [ "$l" = username=me ] && echo password=secret; done; }; f`)
+		dir := filepath.Join(GinkgoT().TempDir(), "clone")
+		Expect(source.Clone(ctx, strings.Replace(srcURL, "://", "://me@", 1), "", dir)).To(Succeed())
+	})
+
+	It("never opens a password dialog", func() {
+		marker := filepath.Join(tmp, "asked")
+		askpass := filepath.Join(tmp, "askpass.sh")
+		Expect(os.WriteFile(askpass, []byte("#!/bin/sh\ntouch '"+marker+"'\necho secret\n"), 0o755)).To(Succeed())
+		GinkgoT().Setenv("GIT_ASKPASS", askpass)
+		GinkgoT().Setenv("SSH_ASKPASS", askpass)
+		dir := filepath.Join(GinkgoT().TempDir(), "clone")
+		Expect(source.Clone(ctx, srcURL, "", dir)).To(MatchError(transport.ErrAuthenticationRequired))
+		Expect(marker).NotTo(BeAnExistingFile())
 	})
 
 	It("reports credentials the server rejects", func() {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -15,22 +16,31 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 )
 
-// withAuth runs op anonymously first. When the server asks for credentials,
-// it looks them up through git's credential helpers (the same ones the git
-// CLI uses, e.g. the macOS keychain) and runs op again with them.
-func withAuth(ctx context.Context, src string, op func(transport.AuthMethod) error) error {
-	err := op(nil)
-	if !isAuthErr(err) {
-		return err
-	}
-	auth := credentials(ctx, src)
-	if auth == nil {
+// authenticator runs git operations against one source. It tries them
+// anonymously first. When the server asks for credentials, it looks them up
+// once through git's credential helpers (the same ones the git CLI uses, e.g.
+// the macOS keychain) and uses them for this and every later operation.
+type authenticator struct {
+	ctx    context.Context
+	src    string
+	auth   transport.AuthMethod
+	looked bool
+}
+
+func newAuthenticator(ctx context.Context, src string) *authenticator {
+	return &authenticator{ctx: ctx, src: src}
+}
+
+func (a *authenticator) run(op func(transport.AuthMethod) error) error {
+	err := op(a.auth)
+	if a.looked || !isAuthErr(err) {
 		return authHint(err)
 	}
-	if err := op(auth); err != nil {
+	a.looked = true
+	if a.auth = credentials(a.ctx, a.src); a.auth == nil {
 		return authHint(err)
 	}
-	return nil
+	return authHint(op(a.auth))
 }
 
 func isAuthErr(err error) bool {
@@ -57,15 +67,25 @@ func authHint(err error) error {
 // no helper knows the host.
 func credentials(ctx context.Context, src string) transport.AuthMethod {
 	u, err := url.Parse(src)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+	if err != nil {
 		return nil
 	}
-	u.User = nil
+	if secure := u.Scheme == "https" || (u.Scheme == "http" && isLoopback(u.Hostname())); !secure {
+		return nil
+	}
+	req := "url=" + (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}).String() + "\n"
+	if name := u.User.Username(); name != "" {
+		req += "username=" + name + "\n"
+	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "credential", "fill")
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never")
-	cmd.Stdin = strings.NewReader("url=" + u.String() + "\n\n")
+	// Empty askpass variables keep git from opening a password dialog, e.g.
+	// the one of an editor's integrated terminal.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=never", "GIT_ASKPASS=", "SSH_ASKPASS=")
+	cmd.Stdin = strings.NewReader(req + "\n")
+	// Stop waiting for a helper that keeps the output open after git is killed.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -85,4 +105,14 @@ func credentials(ctx context.Context, src string) transport.AuthMethod {
 		return nil
 	}
 	return auth
+}
+
+// isLoopback reports whether host is the local machine. Credentials are only
+// sent over plain HTTP to it (as in tests); Normalize rejects http:// sources.
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
