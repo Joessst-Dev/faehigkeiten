@@ -137,6 +137,11 @@ var _ = Describe("TUI", func() {
 		return lf
 	}
 
+	alphaPinned := func() bool {
+		e, _ := lockfile().Get("alpha")
+		return e.Pinned
+	}
+
 	It("shows the main menu and the current target", func() {
 		v := d.view()
 		Expect(v).To(ContainSubstring("Browse repositories"))
@@ -205,6 +210,140 @@ var _ = Describe("TUI", func() {
 		Expect(d.view()).To(ContainSubstring("updated 1 skill(s)"))
 		e, _ = lockfile().Get("alpha")
 		Expect(e.Version).To(Equal("1.1.0"))
+	})
+
+	It("installs an older version pinned and unpins it from the updates screen", func() {
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned skill", "2.0.0"),
+		}, "bump")).To(Succeed())
+		addRepo()
+
+		d.keys("v") // versions of alpha
+		Expect(d.view()).To(ContainSubstring("v2.0.0"))
+		Expect(d.view()).To(ContainSubstring("latest"))
+		d.keys("down", "enter") // v1.0.0
+		Expect(d.view()).To(ContainSubstring("Where should skills be installed?"))
+		d.keys("enter", "enter") // Project, prefilled directory
+		d.keys("enter")          // agents; no tracking step for pinned installs
+		Expect(d.view()).To(ContainSubstring("pinned at 1.0.0"))
+		d.keys("enter")
+		Expect(d.view()).To(ContainSubstring("✓ alpha"))
+		d.keys("enter")
+
+		Expect(os.ReadFile(filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"))).To(ContainSubstring("version: 1.0.0"))
+		e, _ := lockfile().Get("alpha")
+		Expect(e.Pinned).To(BeTrue())
+		Expect(e.Version).To(Equal("1.0.0"))
+
+		d.keys("esc", "esc")
+		d.keys("down", "down", "enter") // Check for updates
+		Expect(d.view()).To(ContainSubstring("pinned • newer version available"))
+		d.keys("enter") // nothing is selected
+		e, _ = lockfile().Get("alpha")
+		Expect(e.Version).To(Equal("1.0.0"))
+
+		d.keys("u")
+		Expect(d.view()).To(ContainSubstring("updated 1 skill(s)"))
+		e, _ = lockfile().Get("alpha")
+		Expect(e.Pinned).To(BeFalse())
+		Expect(e.Version).To(Equal("2.0.0"))
+	})
+
+	It("asks before unpinning a locally modified skill", func() {
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned skill", "2.0.0"),
+		}, "bump")).To(Succeed())
+		addRepo()
+		d.keys("v", "down", "enter", "enter", "enter", "enter", "enter", "enter") // pin 1.0.0
+		Expect(alphaPinned()).To(BeTrue())
+		Expect(testutil.WriteFiles(project, map[string]string{".claude/skills/alpha/notes.md": "mine"})).To(Succeed())
+
+		d.keys("esc", "esc", "down", "down", "enter") // Check for updates
+		Expect(d.view()).To(ContainSubstring("pinned • newer version available • locally modified"))
+		d.keys("u")
+		Expect(d.view()).To(ContainSubstring("overwriting your changes? (y/n)"))
+		d.keys("n")
+		Expect(alphaPinned()).To(BeTrue())
+		Expect(filepath.Join(project, ".claude", "skills", "alpha", "notes.md")).To(BeAnExistingFile())
+
+		d.keys("u", "y")
+		Expect(d.view()).To(ContainSubstring("updated 1 skill(s)"))
+		Expect(alphaPinned()).To(BeFalse())
+	})
+
+	It("reports unpinning a skill that is already at the latest version", func() {
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned skill", "2.0.0"),
+		}, "bump")).To(Succeed())
+		addRepo()
+		d.keys("v", "down", "enter", "enter", "enter", "enter", "enter", "enter") // pin 1.0.0
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned skill", "1.0.0"),
+		}, "revert")).To(Succeed())
+		d.keys("esc", "esc", "down", "down", "enter") // Check for updates
+		Expect(d.view()).To(ContainSubstring("press u to unpin"))
+		d.keys("u")
+		Expect(d.view()).To(ContainSubstring("unpinned alpha"))
+		Expect(alphaPinned()).To(BeFalse())
+	})
+
+	It("installs the newest commit of the latest version even when the skills screen is older", func() {
+		addRepo()
+		Expect(testutil.Commit(repo, origin, map[string]string{"skills/alpha/fix.md": "fixed"}, "fix without a bump")).To(Succeed())
+		d.keys("v")
+		Expect(d.view()).To(ContainSubstring("latest (unpinned)"))
+		d.keys("enter", "enter", "enter", "enter", "enter", "enter")
+		Expect(d.view()).To(ContainSubstring("✓ alpha"))
+		Expect(filepath.Join(project, ".claude", "skills", "alpha", "fix.md")).To(BeAnExistingFile())
+		Expect(alphaPinned()).To(BeFalse())
+	})
+
+	It("keeps lockfile changes made while the wizard is open", func() {
+		addRepo()
+		d.keys("enter", "enter", "enter") // install alpha: target, directory
+		Expect(d.view()).To(ContainSubstring("Which agents"))
+		lf := lockfile()
+		lf.Upsert(lock.Entry{Name: "other", Source: "x", Path: "x", Agents: []string{"claude-code"}, Tracking: lock.TrackNone})
+		Expect(lf.Save()).To(Succeed())
+		d.keys("enter", "enter", "enter")
+		Expect(d.view()).To(ContainSubstring("✓ alpha"))
+		_, ok := lockfile().Get("other")
+		Expect(ok).To(BeTrue(), "the install must not write back a stale lockfile")
+	})
+
+	It("installs the latest version unpinned from the versions screen", func() {
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned skill", "2.0.0"),
+		}, "bump")).To(Succeed())
+		addRepo()
+		d.keys("v", "down", "enter", "enter", "enter", "enter", "enter", "enter") // pin 1.0.0
+		Expect(alphaPinned()).To(BeTrue())
+
+		d.keys("v")
+		Expect(d.view()).To(ContainSubstring("latest"))
+		d.keys("enter", "enter", "enter", "enter") // latest; target, directory, agents
+		Expect(d.view()).To(ContainSubstring("Track version"))
+		d.keys("enter", "enter")
+		Expect(d.view()).To(ContainSubstring("✓ alpha"))
+		Expect(d.view()).To(ContainSubstring("version 2.0.0"))
+		e, _ := lockfile().Get("alpha")
+		Expect(e.Pinned).To(BeFalse())
+		Expect(e.Version).To(Equal("2.0.0"))
+	})
+
+	It("keeps a pinned skill at its version when it is installed again", func() {
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned skill", "2.0.0"),
+		}, "bump")).To(Succeed())
+		addRepo()
+		d.keys("v", "down", "enter", "enter", "enter", "enter", "enter", "enter") // pin 1.0.0
+		d.keys("enter", "enter", "enter", "enter")                                // install alpha from the skills screen: target, directory, agents
+		Expect(d.view()).To(ContainSubstring("pinned at 1.0.0"), "the summary shows the kept pin, no tracking step")
+		d.keys("enter")
+		Expect(d.view()).To(ContainSubstring("✓ alpha"))
+		e, _ := lockfile().Get("alpha")
+		Expect(e.Pinned).To(BeTrue())
+		Expect(e.Version).To(Equal("1.0.0"))
 	})
 
 	It("installs several skills globally with hash tracking for unversioned ones", func() {
@@ -281,7 +420,7 @@ var _ = Describe("TUI", func() {
 			d.keys("enter") // Track version
 			Expect(d.view()).To(ContainSubstring("alpha is now managed from origin (Track version)"))
 			d.keys("enter")
-			Expect(d.view()).To(ContainSubstring("v1.0.0"))
+			Expect(d.view()).To(ContainSubstring("version 1.0.0"))
 
 			e, ok := lockfile().Get("alpha")
 			Expect(ok).To(BeTrue())

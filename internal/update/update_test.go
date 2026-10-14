@@ -2,6 +2,7 @@ package update_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +33,20 @@ var _ = Describe("Newer", func() {
 		Entry("non-semver equal", "beta", "beta", false),
 	)
 })
+
+var _ = DescribeTable("Status",
+	func(st update.Status, updatable bool, notes []string) {
+		Expect(st.Updatable()).To(Equal(updatable))
+		Expect(st.Notes()).To(Equal(notes))
+	},
+	Entry("up to date", update.Status{}, false, []string{"up to date"}),
+	Entry("update", update.Status{Available: true}, true, []string{"update available"}),
+	Entry("modified update", update.Status{Available: true, Modified: true}, true, []string{"update available", "locally modified"}),
+	Entry("pinned", update.Status{Entry: lock.Entry{Pinned: true}}, false, []string{"pinned"}),
+	Entry("pinned with newer version", update.Status{Entry: lock.Entry{Pinned: true}, Available: true, Modified: true}, false,
+		[]string{"pinned", "newer version available", "locally modified"}),
+	Entry("failed", update.Status{Available: true, Err: errors.New("x")}, false, []string{"update available"}),
+)
 
 var _ = Describe("Check and Apply", func() {
 	var (
@@ -152,6 +167,65 @@ var _ = Describe("Check and Apply", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(testutil.Commit(repo, origin, nil, "remove")).To(Succeed())
 		Expect(statusFor(update.Check(ctx, mgr, in), "ver").Err).To(HaveOccurred())
+	})
+
+	It("refuses to update pinned skills until they are unpinned", func() {
+		e, _ := lf.Get("ver")
+		e.Pinned = true
+		lf.Upsert(e)
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/ver/SKILL.md": testutil.SkillMD("ver", "versioned", "1.1.0"),
+		}, "bump")).To(Succeed())
+
+		st := statusFor(update.Check(ctx, mgr, in), "ver")
+		Expect(st.Available).To(BeTrue(), "pinned skills still report newer versions")
+		_, err := update.Apply(in, st)
+		Expect(err).To(MatchError(update.ErrPinned))
+
+		updated, reinstalled, err := update.Unpin(in, st)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reinstalled).To(BeTrue())
+		Expect(updated.Pinned).To(BeFalse())
+		Expect(updated.Version).To(Equal("1.1.0"))
+	})
+
+	It("unpins skills that are already at the latest version", func() {
+		e, _ := lf.Get("ver")
+		e.Pinned = true
+		lf.Upsert(e)
+		_, reinstalled, err := update.Unpin(in, statusFor(update.Check(ctx, mgr, in), "ver"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reinstalled).To(BeFalse())
+		e, _ = lf.Get("ver")
+		Expect(e.Pinned).To(BeFalse())
+		Expect(e.Version).To(Equal("1.0.0"))
+	})
+
+	It("reinstalls an unpinned skill when upstream changed without a version bump", func() {
+		e, _ := lf.Get("ver")
+		e.Pinned = true
+		lf.Upsert(e)
+		Expect(testutil.Commit(repo, origin, map[string]string{"skills/ver/fix.md": "fixed"}, "fix")).To(Succeed())
+		st := statusFor(update.Check(ctx, mgr, in), "ver")
+		Expect(st.Available).To(BeFalse(), "the version did not change")
+		Expect(st.UnpinChanges()).To(BeTrue())
+		_, reinstalled, err := update.Unpin(in, st)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reinstalled).To(BeTrue())
+		Expect(filepath.Join(project, ".claude", "skills", "ver", "fix.md")).To(BeAnExistingFile())
+	})
+
+	It("reinstalls an unpinned skill when upstream went back to an older version", func() {
+		e, _ := lf.Get("ver")
+		e.Pinned, e.Version = true, "2.0.0"
+		lf.Upsert(e)
+		st := statusFor(update.Check(ctx, mgr, in), "ver")
+		Expect(st.Available).To(BeFalse())
+		Expect(st.UnpinChanges()).To(BeTrue())
+		updated, reinstalled, err := update.Unpin(in, st)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reinstalled).To(BeTrue())
+		Expect(updated.Version).To(Equal("1.0.0"))
 	})
 
 	It("refuses to apply when no update is available", func() {

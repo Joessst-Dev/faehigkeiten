@@ -38,6 +38,13 @@ type Skill struct {
 	Dir string
 }
 
+// ShortHash abbreviates a content hash to its first twelve hex digits,
+// without the prefix.
+func ShortHash(h string) string {
+	h = strings.TrimPrefix(h, HashPrefix)
+	return h[:min(12, len(h))]
+}
+
 // HasVersion reports whether the skill declares a version in its frontmatter.
 func (s Skill) HasVersion() bool { return s.Version != "" }
 

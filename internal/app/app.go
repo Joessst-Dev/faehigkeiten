@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -135,6 +136,140 @@ func (a *App) Load(ctx context.Context, src, ref string, refresh bool) (*source.
 		return nil, nil, err
 	}
 	return co, skills, nil
+}
+
+// Versions lists the versions of the skill at path in the branch or tag ref
+// of src, newest first. Refresh updates the cached history first.
+func (a *App) Versions(ctx context.Context, src, ref, path string, refresh bool) ([]source.Version, error) {
+	vs, err := a.Sources.Versions(ctx, src, ref, path, refresh)
+	if err != nil {
+		return nil, err
+	}
+	if len(vs) == 0 {
+		return nil, fmt.Errorf("skill at %s has no versions in its history", path)
+	}
+	return vs, nil
+}
+
+// LoadVersion fetches the skill at path of src as it was at version.
+// Refresh updates the cached history first; installing several versions from
+// one source only needs to do that once.
+func (a *App) LoadVersion(ctx context.Context, src, ref, path, version string, refresh bool) (*source.Checkout, skill.Skill, error) {
+	vs, err := a.Versions(ctx, src, ref, path, refresh)
+	if err != nil {
+		return nil, skill.Skill{}, err
+	}
+	i := slices.IndexFunc(vs, func(v source.Version) bool { return v.Version == version })
+	if i < 0 {
+		known := make([]string, len(vs))
+		for i, v := range vs {
+			known[i] = v.Version
+		}
+		return nil, skill.Skill{}, fmt.Errorf("version %s of %s not found (available: %s)", version, path, strings.Join(known, ", "))
+	}
+	return a.LoadCommit(ctx, src, ref, path, vs[i].Commit)
+}
+
+// LoadCommit fetches the skill at path of src as it was at commit.
+func (a *App) LoadCommit(ctx context.Context, src, ref, path, commit string) (*source.Checkout, skill.Skill, error) {
+	co, err := a.Sources.FetchCommit(ctx, src, ref, commit, path)
+	if err != nil {
+		return nil, skill.Skill{}, err
+	}
+	dir, err := co.SkillDir(path)
+	if err != nil {
+		return nil, skill.Skill{}, err
+	}
+	s, err := skill.ParseFile(filepath.Join(dir, skill.FileName))
+	if err != nil {
+		return nil, skill.Skill{}, fmt.Errorf("skill %s at %s: %w", path, commit, err)
+	}
+	s.Dir, s.Path = dir, path
+	return co, s, nil
+}
+
+// KeptPin returns the lockfile entry that keeps s pinned when it is installed
+// from co without a version: a pin of the same source, path and ref.
+// Installing from another ref replaces the pin.
+func KeptPin(in *install.Installer, co *source.Checkout, s skill.Skill) (lock.Entry, bool) {
+	e, ok := in.Lock.Get(install.DirName(s.Name))
+	if !ok || !e.Pinned || e.Commit == "" || e.Source != co.URL || e.Path != s.Path || e.Ref != co.Ref {
+		return lock.Entry{}, false
+	}
+	return e, true
+}
+
+// Selector chooses the version of a skill to install.
+type Selector struct {
+	// Version is "" to keep an existing pin, Latest to install the checkout
+	// and remove a pin, or a version to install pinned.
+	Version string
+	// Commit optionally names the commit of Version when it is already known,
+	// which saves walking the history again.
+	Commit string
+}
+
+// Pin describes whether installing a skill pins it, and at which version and
+// commit ("" when the commit still has to be looked up).
+type Pin struct {
+	Pinned          bool
+	Version, Commit string
+}
+
+// PinFor decides, without fetching anything, whether installing s from co
+// with sel pins it:
+//   - "": only if the skill is pinned already (see KeptPin), which keeps it
+//     at its pinned commit;
+//   - Latest: never; a pin is removed;
+//   - anything else: always, at that version.
+func PinFor(in *install.Installer, co *source.Checkout, s skill.Skill, sel Selector) Pin {
+	switch sel.Version {
+	case "":
+		if e, ok := KeptPin(in, co, s); ok {
+			return Pin{Pinned: true, Version: e.Version, Commit: e.Commit}
+		}
+	case Latest:
+	default:
+		return Pin{Pinned: true, Version: sel.Version, Commit: sel.Commit}
+	}
+	return Pin{}
+}
+
+// Prepare builds the request for installing s from co with sel, as PinFor
+// decides: unpinned skills are installed from co, pinned ones from the history
+// of co's ref. Refresh updates the cached history before looking up a version;
+// installing several versions from one source only needs to do that once. The
+// returned request has Skill, Checkout and Pinned set.
+func (a *App) Prepare(ctx context.Context, in *install.Installer, co *source.Checkout, s skill.Skill, sel Selector, refresh bool) (install.Request, error) {
+	req := install.Request{Skill: s, Checkout: co}
+	pin := PinFor(in, co, s, sel)
+	if !pin.Pinned {
+		return req, nil
+	}
+	var err error
+	if pin.Commit != "" {
+		req.Checkout, req.Skill, err = a.LoadCommit(ctx, co.URL, co.Ref, s.Path, pin.Commit)
+	} else {
+		req.Checkout, req.Skill, err = a.LoadVersion(ctx, co.URL, co.Ref, s.Path, pin.Version, refresh)
+	}
+	if err != nil {
+		return req, fmt.Errorf("%s at %s: %w", s.Name, pin.Version, err)
+	}
+	req.Pinned = true
+	return req, nil
+}
+
+// Latest is the version selector for the newest, unpinned skill.
+const Latest = "latest"
+
+// SplitVersion splits a "name@version" selector. Names without a version
+// return an empty version. Versions cannot contain "/", so paths with an "@"
+// in a directory name (e.g. "skills/@org/tool") are not split.
+func SplitVersion(sel string) (name, version string) {
+	if i := strings.LastIndex(sel, "@"); i > 0 && i < len(sel)-1 && !strings.Contains(sel[i+1:], "/") {
+		return sel[:i], sel[i+1:]
+	}
+	return sel, ""
 }
 
 // Select picks skills by name or path. An empty selection is an error.

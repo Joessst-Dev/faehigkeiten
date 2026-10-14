@@ -63,6 +63,9 @@ func Normalize(input string) (string, error) {
 	return "", fmt.Errorf("unrecognized source %q (use owner/repo, a git URL or a local directory)", input)
 }
 
+// ShortCommit abbreviates a commit hash to seven characters.
+func ShortCommit(c string) string { return c[:min(7, len(c))] }
+
 // IsLocal reports whether a normalized source is a directory on disk.
 func IsLocal(src string) bool {
 	return filepath.IsAbs(src) && !strings.Contains(src, "://")
@@ -140,19 +143,19 @@ func (m *Manager) Fetch(ctx context.Context, src, ref string, refresh bool) (*Ch
 		// fetched the default branch; reuse that clone instead of cloning the
 		// same branch a second time under its name.
 		def := m.cachePath(src, "")
-		if co, err := openCheckout(src, def); err == nil && co.Ref == ref {
+		if co, err := openCheckout(src, def, ""); err == nil && co.Ref == ref {
 			dir = def
 		}
 	}
 	defer m.lock(dir)()
 
-	if co, err := openCheckout(src, dir); err == nil {
+	if co, err := openCheckout(src, dir, ref); err == nil {
 		if !refresh {
 			return co, nil
 		}
 		err := pull(ctx, dir)
 		if err == nil {
-			return openCheckout(src, dir)
+			return openCheckout(src, dir, ref)
 		}
 		if isAuthErr(err) {
 			// A fresh clone would be rejected the same way.
@@ -178,7 +181,7 @@ func (m *Manager) Fetch(ctx context.Context, src, ref string, refresh bool) (*Ch
 	if err := os.Rename(tmp, dir); err != nil {
 		return nil, err
 	}
-	return openCheckout(src, dir)
+	return openCheckout(src, dir, ref)
 }
 
 // pull updates a shallow single-branch clone to the latest commit of its
@@ -230,13 +233,19 @@ func pull(ctx context.Context, dir string) error {
 }
 
 func clone(ctx context.Context, src, ref, dir string) error {
+	return cloneRepo(ctx, src, ref, dir, false, 1)
+}
+
+// cloneRepo clones the branch or tag ref (the default branch when empty) of
+// src into dir. A depth of 0 fetches the full history.
+func cloneRepo(ctx context.Context, src, ref, dir string, bare bool, depth int) error {
 	// The branch and tag attempts share credentials, so they are looked up once.
 	a := newAuthenticator(ctx, src)
 	cloneRef := func(name plumbing.ReferenceName) error {
 		return a.run(func(auth transport.AuthMethod) error {
 			_ = os.RemoveAll(dir)
-			_, err := git.PlainCloneContext(ctx, dir, false, &git.CloneOptions{
-				URL: src, Auth: auth, ReferenceName: name, Depth: 1, SingleBranch: true, Tags: git.NoTags,
+			_, err := git.PlainCloneContext(ctx, dir, bare, &git.CloneOptions{
+				URL: src, Auth: auth, ReferenceName: name, Depth: depth, SingleBranch: true, Tags: git.NoTags,
 			})
 			return err
 		})
@@ -292,7 +301,9 @@ func (c *Checkout) SkillDir(rel string) (string, error) {
 	return dir, nil
 }
 
-func openCheckout(src, dir string) (*Checkout, error) {
+// openCheckout describes the clone at dir. Tag clones have a detached HEAD,
+// so they report the requested ref instead of "HEAD".
+func openCheckout(src, dir, ref string) (*Checkout, error) {
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
 		return nil, err
@@ -301,7 +312,11 @@ func openCheckout(src, dir string) (*Checkout, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Checkout{URL: src, Ref: head.Name().Short(), Commit: head.Hash().String(), Dir: dir}, nil
+	co := &Checkout{URL: src, Ref: head.Name().Short(), Commit: head.Hash().String(), Dir: dir}
+	if !head.Name().IsBranch() && ref != "" {
+		co.Ref = ref
+	}
+	return co, nil
 }
 
 // localCheckout uses a local directory in place, recording git metadata when

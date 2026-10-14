@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/agent"
+	"github.com/Joessst-Dev/faehigkeiten/internal/app"
 	"github.com/Joessst-Dev/faehigkeiten/internal/install"
 	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
@@ -70,7 +71,12 @@ type wizardScreen struct {
 	spin   spinner.Model
 	res    installDoneMsg
 	force  bool
-	err    error
+	// sel is passed to app.Prepare for every skill.
+	sel app.Selector
+	// pins maps the names of skills that will be installed pinned to their
+	// version. Pinned skills need no tracking mode.
+	pins map[string]string
+	err  error
 }
 
 func newWizard(e *env, co *source.Checkout, skills []skill.Skill) *wizardScreen {
@@ -139,6 +145,14 @@ func (w *wizardScreen) Init() tea.Cmd {
 			return
 		}
 		w.target = t
+		// The lockfile is read again when installing, so changes made by
+		// others in the meantime are kept.
+		in, err := w.env.app.Installer(t)
+		if err != nil {
+			w.err = err
+			return
+		}
+		w.pins = w.pinsFor(in)
 		w.step = stepAgents
 		w.agents = w.agentItems()
 	}))
@@ -173,7 +187,33 @@ func (w *wizardScreen) chosenAgents() []agent.Agent {
 	return out
 }
 
+// pinsFor lists the skills that installing with in pins.
+func (w *wizardScreen) pinsFor(in *install.Installer) map[string]string {
+	pins := map[string]string{}
+	for _, s := range w.skills {
+		if p := app.PinFor(in, w.co, s, w.sel); p.Pinned {
+			pins[s.Name] = p.Version
+		}
+	}
+	return pins
+}
+
+// allPinned reports whether every skill is installed pinned, so no tracking
+// mode needs to be chosen.
+func (w *wizardScreen) allPinned() bool { return len(w.pins) == len(w.skills) }
+
+// planLabel describes how s will be installed and tracked.
+func (w *wizardScreen) planLabel(s skill.Skill) string {
+	if v, ok := w.pins[s.Name]; ok {
+		return install.PinLabel(v)
+	}
+	return trackingLabel(w.trackingFor(s))
+}
+
 func (w *wizardScreen) trackingFor(s skill.Skill) lock.Tracking {
+	if _, ok := w.pins[s.Name]; ok {
+		return lock.TrackVersion
+	}
 	it, _ := w.track.Current()
 	if t, ok := it.Value.(lock.Tracking); ok {
 		return t
@@ -183,7 +223,7 @@ func (w *wizardScreen) trackingFor(s skill.Skill) lock.Tracking {
 
 func (w *wizardScreen) run() tea.Cmd {
 	w.step = stepRunning
-	e, co, skills, target, agents, force := w.env, w.co, w.skills, w.target, w.chosenAgents(), w.force
+	e, co, skills, target, agents, force, sel := w.env, w.co, w.skills, w.target, w.chosenAgents(), w.force, w.sel
 	tracking := make([]lock.Tracking, len(skills))
 	for i, s := range skills {
 		tracking[i] = w.trackingFor(s)
@@ -195,7 +235,14 @@ func (w *wizardScreen) run() tea.Cmd {
 		}
 		var res []installResult
 		for i, s := range skills {
-			entry, err := in.Install(install.Request{Skill: s, Checkout: co, Agents: agents, Tracking: tracking[i], Force: force})
+			// The versions screen already updated the history.
+			req, err := e.app.Prepare(e.ctx, in, co, s, sel, false)
+			if err != nil {
+				res = append(res, installResult{name: s.Name, err: err})
+				continue
+			}
+			req.Agents, req.Tracking, req.Force = agents, tracking[i], force
+			entry, err := in.Install(req)
 			res = append(res, installResult{name: s.Name, entry: entry, err: err})
 		}
 		return installDoneMsg{results: res, saveErr: in.Lock.Save()}
@@ -237,6 +284,9 @@ func (w *wizardScreen) key(k tea.KeyMsg) tea.Cmd {
 			}
 			w.err = nil
 			w.step = stepTracking
+			if w.allPinned() {
+				w.step = stepConfirm
+			}
 		}
 	case stepTracking:
 		if handled, cmd := w.track.Update(k); handled {
@@ -252,6 +302,9 @@ func (w *wizardScreen) key(k tea.KeyMsg) tea.Cmd {
 		switch k.String() {
 		case "esc":
 			w.step = stepTracking
+			if w.allPinned() {
+				w.step = stepAgents
+			}
 		case "enter", "y":
 			return w.run()
 		}
@@ -303,7 +356,7 @@ func (w *wizardScreen) View() string {
 		}
 		fmt.Fprintf(&b, "Agents:   %s\n", strings.Join(agents, ", "))
 		for _, s := range w.skills {
-			fmt.Fprintf(&b, "%-24s %s\n", s.Name, subtleStyle.Render(trackingLabel(w.trackingFor(s))))
+			fmt.Fprintf(&b, "%-24s %s\n", s.Name, subtleStyle.Render(w.planLabel(s)))
 		}
 		b.WriteString("\nPress enter to install.")
 	case stepRunning:
@@ -315,7 +368,8 @@ func (w *wizardScreen) View() string {
 				fmt.Fprintf(&b, "%s %s: %s\n", errStyle.Render("✗"), r.name, r.err)
 				continue
 			}
-			fmt.Fprintf(&b, "%s %s %s\n", okStyle.Render("✓"), r.name, subtleStyle.Render(trackingLabel(r.entry.Tracking)))
+			label := install.Describe(r.entry)
+			fmt.Fprintf(&b, "%s %s %s\n", okStyle.Render("✓"), r.name, subtleStyle.Render(label))
 		}
 		if w.res.saveErr != nil {
 			fmt.Fprintf(&b, "\n%s\n", errStyle.Render("lockfile: "+w.res.saveErr.Error()))
@@ -387,7 +441,7 @@ func (s *installedScreen) reload() {
 	for _, e := range in.Lock.Skills {
 		items = append(items, pickItem{
 			Title:   e.Name,
-			Badge:   entryBadge(e),
+			Badge:   install.Describe(e),
 			Desc:    source.DisplayName(e.Source) + " • " + strings.Join(e.Agents, ", "),
 			NoCheck: true,
 			Value:   e,
@@ -406,17 +460,6 @@ func (s *installedScreen) reload() {
 		items = append(items, it)
 	}
 	s.list.SetItems(items)
-}
-
-func entryBadge(e lock.Entry) string {
-	switch e.Tracking {
-	case lock.TrackVersion:
-		return "v" + strings.TrimPrefix(e.Version, "v")
-	case lock.TrackHash:
-		h := strings.TrimPrefix(e.Hash, skill.HashPrefix)
-		return "hash " + h[:min(8, len(h))]
-	}
-	return "untracked"
 }
 
 func (s *installedScreen) remove(v any) error {
@@ -553,16 +596,20 @@ type (
 		err      error
 	}
 	appliedMsg struct {
-		updated []string
-		errs    []error
+		updated  []string
+		unpinned []string
+		errs     []error
 	}
 )
 
 type updatesScreen struct {
-	env      *env
-	list     *pickList
-	spin     spinner.Model
-	busy     string
+	env  *env
+	list *pickList
+	spin spinner.Model
+	busy string
+	// confirm is the index of a locally modified pinned skill whose unpinning
+	// waits for confirmation, or -1.
+	confirm  int
 	in       *install.Installer
 	statuses []update.Status
 	msg      string
@@ -573,13 +620,19 @@ type updatesScreen struct {
 func newUpdatesScreen(e *env) *updatesScreen {
 	l := newPickList(nil, true)
 	l.emptyMsg = "no tracked skills in this target"
-	return &updatesScreen{env: e, list: l, spin: newSpinner()}
+	return &updatesScreen{env: e, list: l, spin: newSpinner(), confirm: -1}
 }
 
 func (s *updatesScreen) Title() string { return "Updates" }
 func (s *updatesScreen) Help() string {
 	if s.busy != "" {
 		return ""
+	}
+	if s.confirm >= 0 {
+		return "y overwrite and update • n cancel"
+	}
+	if it, ok := s.list.Current(); ok && s.statuses[it.Value.(int)].Entry.Pinned {
+		return "space toggle • enter update selected • u unpin and update • r re-check"
 	}
 	return "space toggle • enter update selected • r re-check"
 }
@@ -612,21 +665,36 @@ func (s *updatesScreen) Update(msg tea.Msg) tea.Cmd {
 		items := make([]pickItem, 0, len(msg.statuses))
 		for i, st := range msg.statuses {
 			it := pickItem{Title: st.Entry.Name, Value: i}
-			switch {
-			case st.Err != nil:
+			if st.Err != nil {
 				it.Disabled, it.Badge, it.Desc = true, "error", st.Err.Error()
-			case st.Available && st.Modified:
-				// Not preselected: updating overwrites the local edits.
-				it.Badge = "update available • locally modified"
-				it.Desc = fmt.Sprintf("%s: %s → %s • updating overwrites your local changes", st.Entry.Tracking, short(st.Current), short(st.Latest))
-			case st.Available:
-				it.Checked, it.Badge = true, "update available"
+				items = append(items, it)
+				continue
+			}
+			notes := st.Notes()
+			if !st.Entry.Pinned && !st.Available {
+				notes = notes[1:] // "up to date" is in the description
+			}
+			it.Badge = strings.Join(notes, " • ")
+			if st.Available {
 				it.Desc = fmt.Sprintf("%s: %s → %s", st.Entry.Tracking, short(st.Current), short(st.Latest))
-			case st.Modified:
-				it.Disabled, it.Badge = true, "locally modified"
+			} else {
 				it.Desc = fmt.Sprintf("%s: %s (up to date)", st.Entry.Tracking, short(st.Current))
+			}
+			switch {
+			case st.Entry.Pinned && st.Available:
+				it.NoCheck = true
+				it.Desc += " • press u to unpin and update"
+			case st.Entry.Pinned:
+				it.NoCheck = true
+				it.Desc += " • press u to unpin"
+			case !st.Available:
+				it.Disabled = true
 			default:
-				it.Disabled, it.Desc = true, fmt.Sprintf("%s: %s (up to date)", st.Entry.Tracking, short(st.Current))
+				// Modified skills are not preselected: updating overwrites the local edits.
+				it.Checked = !st.Modified
+			}
+			if st.Available && st.Modified {
+				it.Desc += " • updating overwrites your local changes"
 			}
 			items = append(items, it)
 		}
@@ -634,12 +702,27 @@ func (s *updatesScreen) Update(msg tea.Msg) tea.Cmd {
 		return nil
 	case appliedMsg:
 		s.busy, s.errs = "", msg.errs
-		s.msg = fmt.Sprintf("updated %d skill(s)", len(msg.updated))
+		switch {
+		case len(msg.unpinned) > 0 && len(msg.updated) == 0:
+			s.msg = "unpinned " + strings.Join(msg.unpinned, ", ")
+		case len(msg.updated) > 0 || len(msg.errs) == 0:
+			s.msg = fmt.Sprintf("updated %d skill(s)", len(msg.updated))
+		default:
+			s.msg = ""
+		}
 		return s.check()
 	case tea.KeyMsg:
 		if s.busy != "" {
 			if msg.String() == "esc" {
 				return pop
+			}
+			return nil
+		}
+		if s.confirm >= 0 {
+			i := s.confirm
+			s.confirm = -1
+			if msg.String() == "y" {
+				return s.unpinAt(i)
 			}
 			return nil
 		}
@@ -654,20 +737,59 @@ func (s *updatesScreen) Update(msg tea.Msg) tea.Cmd {
 			return s.check()
 		case "enter":
 			return s.apply()
+		case "u":
+			return s.unpin()
 		}
 	}
 	return nil
 }
 
-func short(v string) string {
-	v = strings.TrimPrefix(v, skill.HashPrefix)
-	if len(v) > 12 {
-		return v[:12]
+// unpin removes the pin of the skill under the cursor and updates it. Local
+// changes are only overwritten after confirmation.
+func (s *updatesScreen) unpin() tea.Cmd {
+	it, ok := s.list.Current()
+	if !ok || s.in == nil {
+		return nil
 	}
+	i := it.Value.(int)
+	st := s.statuses[i]
+	if !st.Entry.Pinned || st.Err != nil {
+		return nil
+	}
+	if st.UnpinChanges() && st.Modified {
+		s.confirm = i
+		return nil
+	}
+	return s.unpinAt(i)
+}
+
+func (s *updatesScreen) unpinAt(i int) tea.Cmd {
+	st := s.statuses[i]
+	s.busy = "unpinning"
+	in := s.in
+	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+		var res appliedMsg
+		switch _, updated, err := update.Unpin(in, st); {
+		case err != nil:
+			res.errs = append(res.errs, fmt.Errorf("%s: %w", st.Entry.Name, err))
+		case updated:
+			res.updated = append(res.updated, st.Entry.Name)
+		default:
+			res.unpinned = append(res.unpinned, st.Entry.Name)
+		}
+		if err := in.Lock.Save(); err != nil {
+			res.errs = append(res.errs, err)
+		}
+		return res
+	}))
+}
+
+// short abbreviates a version or hash for display.
+func short(v string) string {
 	if v == "" {
 		return "-"
 	}
-	return v
+	return skill.ShortHash(v)
 }
 
 func (s *updatesScreen) apply() tea.Cmd {
@@ -699,7 +821,7 @@ func (s *updatesScreen) apply() tea.Cmd {
 func (s *updatesScreen) modifiedUpdates() int {
 	n := 0
 	for _, st := range s.statuses {
-		if st.Err == nil && st.Available && st.Modified {
+		if st.Updatable() && st.Modified {
 			n++
 		}
 	}
@@ -722,6 +844,11 @@ func (s *updatesScreen) View() string {
 	}
 	b.WriteString("\n")
 	b.WriteString(s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4))
+	if s.confirm >= 0 {
+		b.WriteString("\n")
+		b.WriteString(warnStyle.Render(fmt.Sprintf(
+			"%s was modified locally. Unpin and update it, overwriting your changes? (y/n)", s.statuses[s.confirm].Entry.Name)))
+	}
 	if s.msg != "" {
 		b.WriteString("\n")
 		b.WriteString(okStyle.Render(s.msg))

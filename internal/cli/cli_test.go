@@ -110,6 +110,185 @@ var _ = Describe("CLI", func() {
 		Expect(filepath.Join(project, lock.FileName)).NotTo(BeAnExistingFile())
 	})
 
+	Describe("versions", func() {
+		var src string
+		var commits map[string]string
+
+		BeforeEach(func() {
+			src = testutil.FileURL(origin)
+			h, err := repo.Head()
+			Expect(err).NotTo(HaveOccurred())
+			commits = map[string]string{"1.0.0": h.Hash().String()}
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", "2.0.0"),
+			}, "bump")).To(Succeed())
+			h, err = repo.Head()
+			Expect(err).NotTo(HaveOccurred())
+			commits["2.0.0"] = h.Hash().String()
+		})
+
+		It("lists the versions of a skill", func() {
+			code, out, errOut := run("install", src, "alpha", "--versions")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(MatchRegexp(`2\.0\.0\s+` + commits["2.0.0"][:7] + `\s+\S+\s+\(latest\)`))
+			Expect(out).To(MatchRegexp(`1\.0\.0\s+` + commits["1.0.0"][:7]))
+		})
+
+		It("explains unknown versions", func() {
+			code, _, errOut := run("install", src, "alpha@9.9.9", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("available: 2.0.0, 1.0.0"))
+		})
+
+		It("pins a skill at an older version until it is unpinned", func() {
+			code, out, errOut := run("install", src, "alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("installed alpha (pinned at 1.0.0)"))
+			Expect(os.ReadFile(filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"))).To(ContainSubstring("version: 1.0.0"))
+			lf, err := lock.Load(filepath.Join(project, lock.FileName))
+			Expect(err).NotTo(HaveOccurred())
+			e, _ := lf.Get("alpha")
+			Expect(e.Pinned).To(BeTrue())
+			Expect(e.Version).To(Equal("1.0.0"))
+			Expect(e.Commit).To(Equal(commits["1.0.0"]))
+			Expect(e.Ref).To(Equal("master"))
+
+			code, out, _ = run("check", "-p", project, "--exit-code")
+			Expect(code).To(Equal(0), "pinned skills do not count as updates")
+			Expect(out).To(ContainSubstring("pinned (newer version available)"))
+
+			code, out, errOut = run("update", "-p", project)
+			Expect(code).To(Equal(0))
+			Expect(out).To(ContainSubstring("nothing to update"))
+			Expect(errOut).To(ContainSubstring("skipping alpha: pinned at 1.0.0"))
+
+			code, out, errOut = run("update", "alpha", "--unpin", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("updated alpha (version 2.0.0)"))
+			lf, err = lock.Load(filepath.Join(project, lock.FileName))
+			Expect(err).NotTo(HaveOccurred())
+			e, _ = lf.Get("alpha")
+			Expect(e.Pinned).To(BeFalse())
+			Expect(e.Commit).To(Equal(commits["2.0.0"]))
+		})
+
+		It("keeps the pin when a pinned skill is installed again without a version", func() {
+			code, _, errOut := run("install", src, "alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			code, out, errOut := run("install", src, "alpha", "-p", project, "--force")
+			Expect(code).To(Equal(0), errOut)
+			Expect(errOut).To(ContainSubstring("alpha is pinned at 1.0.0 and stays there"))
+			Expect(out).To(ContainSubstring("installed alpha (pinned at 1.0.0)"))
+			Expect(os.ReadFile(filepath.Join(project, ".claude", "skills", "alpha", "SKILL.md"))).To(ContainSubstring("version: 1.0.0"))
+		})
+
+		It("replaces the pin when installing from another ref", func() {
+			code, _, errOut := run("install", src, "alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			h, err := repo.Head()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(os.WriteFile(filepath.Join(origin, ".git", "refs", "heads", "dev"), []byte(h.Hash().String()+"\n"), 0o644)).To(Succeed())
+			code, out, errOut := run("install", src, "alpha", "--ref", "dev", "-p", project, "--force")
+			Expect(code).To(Equal(0), errOut)
+			Expect(errOut).NotTo(ContainSubstring("stays there"))
+			Expect(out).To(ContainSubstring("installed alpha (version 2.0.0)"))
+		})
+
+		It("updates the history for versions after keeping a pin", func() {
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"skills/beta/SKILL.md": testutil.SkillMD("beta", "Unversioned", "1.0.0"),
+			}, "version beta")).To(Succeed())
+			code, _, errOut := run("install", src, "alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"skills/beta/SKILL.md": testutil.SkillMD("beta", "Unversioned", "2.0.0"),
+			}, "bump beta")).To(Succeed())
+			code, out, errOut := run("install", src, "alpha", "beta@2.0.0", "-p", project, "--force")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("installed beta (pinned at 2.0.0)"))
+		})
+
+		It("unpins skills named @latest with --all", func() {
+			code, _, errOut := run("install", src, "alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			code, out, errOut := run("install", src, "--all", "alpha@latest", "-p", project, "--force")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("installed alpha (version 2.0.0)"))
+		})
+
+		It("shares one history between --versions and installs", func() {
+			code, _, errOut := run("install", src, "alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			code, _, errOut = run("install", src, "alpha", "--versions")
+			Expect(code).To(Equal(0), errOut)
+			histories, _ := filepath.Glob(filepath.Join(filepath.Dir(cfgDir), "cache", "repos", "*.history"))
+			Expect(histories).To(HaveLen(1))
+		})
+
+		It("decides tracking per skill", func() {
+			code, _, errOut := run("install", src, "alpha@1.0.0", "beta", "-p", project, "--track", "hash")
+			Expect(code).To(Equal(0), errOut)
+			Expect(errOut).To(ContainSubstring("alpha is pinned, using version tracking"))
+			lf, err := lock.Load(filepath.Join(project, lock.FileName))
+			Expect(err).NotTo(HaveOccurred())
+			beta, _ := lf.Get("beta")
+			Expect(beta.Tracking).To(Equal(lock.TrackHash))
+		})
+
+		It("does not call an older version the latest when the skill lost its version", func() {
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"skills/alpha/SKILL.md": testutil.SkillMD("alpha", "Versioned", ""),
+			}, "drop version")).To(Succeed())
+			code, out, errOut := run("install", src, "alpha", "--versions")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("2.0.0"))
+			Expect(out).NotTo(ContainSubstring("(latest)"))
+		})
+
+		It("reports and protects local changes to pinned skills", func() {
+			code, _, errOut := run("install", src, "alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(testutil.WriteFiles(project, map[string]string{".claude/skills/alpha/notes.md": "mine"})).To(Succeed())
+
+			_, out, _ := run("check", "-p", project)
+			Expect(out).To(ContainSubstring("pinned (newer version available, locally modified)"))
+			Expect(out).NotTo(ContainSubstring("updating overwrites"), "update does not touch pinned skills")
+
+			code, _, errOut = run("update", "alpha", "--unpin", "-p", project)
+			Expect(code).To(Equal(0))
+			Expect(errOut).To(ContainSubstring("skipping alpha: it was modified locally"))
+			Expect(filepath.Join(project, ".claude", "skills", "alpha", "notes.md")).To(BeAnExistingFile())
+		})
+
+		It("unpins a skill pinned at the latest version", func() {
+			code, _, errOut := run("install", src, "alpha@2.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			code, out, _ := run("update", "alpha", "--unpin", "-p", project)
+			Expect(code).To(Equal(0))
+			Expect(out).To(ContainSubstring("unpinned alpha"))
+		})
+
+		It("removes the pin when installing @latest", func() {
+			code, _, errOut := run("install", src, "alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			code, out, errOut := run("install", src, "alpha@latest", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("installed alpha (version 2.0.0)"))
+		})
+
+		It("installs older versions from a local repository", func() {
+			code, out, errOut := run("install", origin, "skills/alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("pinned at 1.0.0"))
+		})
+
+		It("rejects --all with a version", func() {
+			code, _, errOut := run("install", src, "--all", "alpha@1.0.0", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("--all"))
+		})
+	})
+
 	It("lists skills that were not installed by faehigkeiten", func() {
 		Expect(testutil.WriteFiles(project, map[string]string{
 			".claude/skills/handmade/SKILL.md": testutil.SkillMD("handmade", "", ""),

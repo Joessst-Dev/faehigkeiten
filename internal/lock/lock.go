@@ -50,15 +50,17 @@ func ParseTracking(s string) (Tracking, error) {
 
 // Entry describes one installed skill.
 type Entry struct {
-	Name        string    `yaml:"name"`
-	Source      string    `yaml:"source"`
-	Path        string    `yaml:"path"`
-	Ref         string    `yaml:"ref,omitempty"`
-	Commit      string    `yaml:"commit,omitempty"`
-	Agents      []string  `yaml:"agents"`
-	Tracking    Tracking  `yaml:"tracking"`
-	Version     string    `yaml:"version,omitempty"`
-	Hash        string    `yaml:"hash,omitempty"`
+	Name     string   `yaml:"name"`
+	Source   string   `yaml:"source"`
+	Path     string   `yaml:"path"`
+	Ref      string   `yaml:"ref,omitempty"`
+	Commit   string   `yaml:"commit,omitempty"`
+	Agents   []string `yaml:"agents"`
+	Tracking Tracking `yaml:"tracking"`
+	Version  string   `yaml:"version,omitempty"`
+	Hash     string   `yaml:"hash,omitempty"`
+	// Pinned entries were installed at a chosen version and are not updated.
+	Pinned      bool      `yaml:"pinned,omitempty"`
 	InstalledAt time.Time `yaml:"installed_at"`
 }
 

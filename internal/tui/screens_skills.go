@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Joessst-Dev/faehigkeiten/internal/app"
 	"github.com/Joessst-Dev/faehigkeiten/internal/registry"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
 	"github.com/Joessst-Dev/faehigkeiten/internal/source"
@@ -49,7 +50,7 @@ func (s *skillsScreen) Help() string {
 	if s.loading {
 		return ""
 	}
-	return "space select • a all • enter install • / filter • r refresh"
+	return "space select • a all • enter install • v versions • / filter • r refresh"
 }
 
 func (s *skillsScreen) Init() tea.Cmd { return s.load(false) }
@@ -106,6 +107,12 @@ func (s *skillsScreen) Update(msg tea.Msg) tea.Cmd {
 			return pop
 		case "r":
 			return s.load(true)
+		case "v":
+			it, ok := s.list.Current()
+			if !ok || s.co == nil {
+				return nil
+			}
+			return push(newVersionsScreen(s.env, s.co, it.Value.(skill.Skill)))
 		case "enter":
 			if s.co == nil {
 				return nil
@@ -141,11 +148,11 @@ func (s *skillsScreen) View() string {
 	if s.err != nil {
 		return errStyle.Render("Could not load repository: "+s.err.Error()) + "\n\n" + subtleStyle.Render("press r to retry")
 	}
-	head := subtleStyle.Render(fmt.Sprintf("%s @ %s • %d skills", s.co.URL, shortCommit(s.co), len(s.list.items)))
+	head := subtleStyle.Render(fmt.Sprintf("%s @ %s • %d skills", s.co.URL, checkoutLabel(s.co), len(s.list.items)))
 	return head + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-2)
 }
 
-func shortCommit(co *source.Checkout) string {
+func checkoutLabel(co *source.Checkout) string {
 	if co.Commit == "" {
 		return "local"
 	}
@@ -153,7 +160,151 @@ func shortCommit(co *source.Checkout) string {
 	if ref == "" {
 		ref = "HEAD"
 	}
-	return ref + " " + co.Commit[:min(7, len(co.Commit))]
+	return ref + " " + source.ShortCommit(co.Commit)
+}
+
+// ---- versions of one skill ----
+
+type (
+	versionsLoadedMsg struct {
+		versions []source.Version
+		err      error
+	}
+	latestLoadedMsg struct {
+		co    *source.Checkout
+		skill skill.Skill
+		err   error
+	}
+)
+
+type versionsScreen struct {
+	env   *env
+	co    *source.Checkout
+	skill skill.Skill
+	busy  string
+	spin  spinner.Model
+	list  *pickList
+	err   error
+}
+
+// newVersionsScreen lists the versions in the history of a skill's SKILL.md
+// in the checkout co and installs the chosen one: the current version
+// unpinned, older ones pinned.
+func newVersionsScreen(e *env, co *source.Checkout, sk skill.Skill) *versionsScreen {
+	l := newPickList(nil, false)
+	return &versionsScreen{env: e, co: co, skill: sk, spin: newSpinner(), list: l}
+}
+
+func (s *versionsScreen) Title() string { return s.skill.Name + " versions" }
+func (s *versionsScreen) Help() string {
+	if s.busy != "" {
+		return ""
+	}
+	return "enter install • / filter"
+}
+
+func (s *versionsScreen) Init() tea.Cmd {
+	s.busy = "reading history"
+	e := s.env
+	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+		vs, err := e.app.Versions(e.ctx, s.co.URL, s.co.Ref, s.skill.Path, true)
+		return versionsLoadedMsg{vs, err}
+	}))
+}
+
+func (s *versionsScreen) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if s.busy == "" {
+			return nil
+		}
+		var cmd tea.Cmd
+		s.spin, cmd = s.spin.Update(msg)
+		return cmd
+	case versionsLoadedMsg:
+		s.busy, s.err = "", msg.err
+		items := make([]pickItem, 0, len(msg.versions))
+		for _, v := range msg.versions {
+			it := pickItem{
+				Title: versionBadge(v.Version),
+				Desc:  source.ShortCommit(v.Commit) + " • " + v.Date.Format(time.DateOnly),
+				Value: v,
+			}
+			if v.Latest {
+				it.Badge = "latest (unpinned)"
+			} else {
+				it.Badge = "pinned"
+			}
+			items = append(items, it)
+		}
+		s.list.SetItems(items)
+		return nil
+	case latestLoadedMsg:
+		s.busy = ""
+		if msg.err != nil {
+			s.err = msg.err
+			return nil
+		}
+		return replace(s.latestWizard(msg.co, msg.skill))
+	case tea.KeyMsg:
+		if s.busy != "" {
+			if msg.String() == "esc" {
+				return pop
+			}
+			return nil
+		}
+		if handled, cmd := s.list.Update(msg); handled {
+			return cmd
+		}
+		switch msg.String() {
+		case "esc":
+			return pop
+		case "enter":
+			it, ok := s.list.Current()
+			if !ok {
+				return nil
+			}
+			v := it.Value.(source.Version)
+			if !v.Latest {
+				w := newWizard(s.env, s.co, []skill.Skill{s.skill})
+				// The commit is known, so the install needs no second walk.
+				w.sel = app.Selector{Version: v.Version, Commit: v.Commit}
+				return replace(w)
+			}
+			// The skills screen may show an older checkout than the history,
+			// even with the same version, so install the newest commit.
+			s.busy, s.err = "fetching "+versionBadge(v.Version), nil
+			e := s.env
+			return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+				co, sk, err := e.app.LoadCommit(e.ctx, s.co.URL, s.co.Ref, s.skill.Path, v.Commit)
+				return latestLoadedMsg{co, sk, err}
+			}))
+		}
+	}
+	return nil
+}
+
+// latestWizard installs the latest version like the skills screen does, but
+// replacing a pin instead of keeping it.
+func (s *versionsScreen) latestWizard(co *source.Checkout, sk skill.Skill) *wizardScreen {
+	w := newWizard(s.env, co, []skill.Skill{sk})
+	w.sel = app.Selector{Version: app.Latest}
+	return w
+}
+
+func (s *versionsScreen) View() string {
+	if s.busy != "" {
+		return s.spin.View() + " " + s.busy + " …"
+	}
+	var b strings.Builder
+	b.WriteString(subtleStyle.Render("Older versions are installed pinned: they are not updated until you unpin them. The latest version removes a pin."))
+	b.WriteString("\n\n")
+	if s.err != nil {
+		b.WriteString(errStyle.Render(s.err.Error()))
+		return b.String()
+	}
+	b.WriteString(s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-2))
+	return b.String()
 }
 
 // ---- search ----
