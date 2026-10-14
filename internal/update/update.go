@@ -3,6 +3,7 @@ package update
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,34 @@ func Check(ctx context.Context, f Fetcher, in *install.Installer) []Status {
 	return out
 }
 
+// Updatable reports whether Apply can update the skill: an update is
+// available and the skill is not pinned. Local modifications are not
+// considered; callers decide whether to overwrite them.
+func (st Status) Updatable() bool {
+	return st.Err == nil && st.Available && !st.Entry.Pinned
+}
+
+// Notes describes the state of a successfully checked skill, most important
+// first, e.g. ["pinned", "newer version available", "locally modified"].
+func (st Status) Notes() []string {
+	var out []string
+	switch {
+	case st.Entry.Pinned:
+		out = append(out, "pinned")
+		if st.Available {
+			out = append(out, "newer version available")
+		}
+	case st.Available:
+		out = append(out, "update available")
+	default:
+		out = append(out, "up to date")
+	}
+	if st.Modified {
+		out = append(out, "locally modified")
+	}
+	return out
+}
+
 func compare(st *Status, co *source.Checkout) {
 	e := st.Entry
 	dir, err := co.SkillDir(e.Path)
@@ -120,9 +149,16 @@ func Newer(latest, current string) bool {
 	return latest != current
 }
 
+// ErrPinned is returned when applying an update to a pinned skill.
+var ErrPinned = errors.New("skill is pinned")
+
 // Apply reinstalls the skill of an available update with its recorded agents
-// and tracking mode. The lockfile is not saved.
+// and tracking mode. Pinned skills are refused; see Unpin. The lockfile is
+// not saved.
 func Apply(in *install.Installer, st Status) (lock.Entry, error) {
+	if st.Entry.Pinned {
+		return lock.Entry{}, fmt.Errorf("%w: %s is pinned at %s", ErrPinned, st.Entry.Name, st.Entry.Version)
+	}
 	if !st.Available || st.checkout == nil {
 		return lock.Entry{}, fmt.Errorf("no update available for %s", st.Entry.Name)
 	}
@@ -152,4 +188,34 @@ func Apply(in *install.Installer, st Status) (lock.Entry, error) {
 	e.Agents = st.Entry.Agents
 	in.Lock.Upsert(e)
 	return e, nil
+}
+
+// UnpinChanges reports whether Unpin reinstalls the skill: upstream differs
+// from the pinned version, newer or not, or has other content under the same
+// version (fixes made without a version bump).
+func (st Status) UnpinChanges() bool {
+	if st.Err != nil || st.checkout == nil {
+		return false
+	}
+	if st.Current != st.Latest {
+		return true
+	}
+	// Hashed only here: checks never need it. An unreadable upstream is
+	// treated as a change, so reinstalling reports the error.
+	h, err := skill.Hash(st.skill.Dir)
+	return err != nil || h != st.Entry.Hash
+}
+
+// Unpin removes the pin of a skill. When upstream differs from the pinned
+// version, even when it is older, the skill is reinstalled from upstream and
+// updated is true. The lockfile is not saved.
+func Unpin(in *install.Installer, st Status) (e lock.Entry, updated bool, err error) {
+	st.Entry.Pinned = false
+	if !st.UnpinChanges() {
+		in.Lock.Upsert(st.Entry)
+		return st.Entry, false, nil
+	}
+	st.Available = true
+	e, err = Apply(in, st)
+	return e, err == nil, err
 }

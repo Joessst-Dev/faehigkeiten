@@ -18,6 +18,23 @@ import (
 	"github.com/Joessst-Dev/faehigkeiten/internal/testutil"
 )
 
+var _ = DescribeTable("SplitVersion",
+	func(sel, name, version string) {
+		n, v := app.SplitVersion(sel)
+		Expect(n).To(Equal(name))
+		Expect(v).To(Equal(version))
+	},
+	Entry("plain name", "pdf", "pdf", ""),
+	Entry("version", "pdf@1.2.0", "pdf", "1.2.0"),
+	Entry("latest", "pdf@latest", "pdf", "latest"),
+	Entry("path", "skills/pdf@2", "skills/pdf", "2"),
+	Entry("last @ wins", "a@b@1", "a@b", "1"),
+	Entry("trailing @", "pdf@", "pdf@", ""),
+	Entry("leading @", "@pdf", "@pdf", ""),
+	Entry("@ in a directory", "skills/@org/tool", "skills/@org/tool", ""),
+	Entry("@ in a directory with a version", "skills/@org/tool@1.0", "skills/@org/tool", "1.0"),
+)
+
 var _ = Describe("ProjectRoot", func() {
 	It("finds the enclosing git root", func() {
 		root := GinkgoT().TempDir()

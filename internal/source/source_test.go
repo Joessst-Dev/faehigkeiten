@@ -212,6 +212,7 @@ var _ = Describe("Manager", func() {
 			co, err := m.Fetch(ctx, url, "v1.0.0", false)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(co.Commit).To(Equal(head()))
+			Expect(co.Ref).To(Equal("v1.0.0"), "a tag checkout records the tag, not HEAD")
 		})
 
 		It("reports unknown refs", func() {

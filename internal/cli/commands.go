@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -32,12 +33,18 @@ func newInstallCommand() *cobra.Command {
 		all      bool
 		force    bool
 		listOnly bool
+		versions bool
 	)
 	cmd := &cobra.Command{
-		Use:   "install <source> [skill...]",
+		Use:   "install <source> [skill[@version]...]",
 		Short: "Install skills from a repository",
 		Long: `Install skills from a source: "owner/repo" (GitHub), a git URL or a local directory.
 Select skills by name or path, or use --all.
+
+Append @version to a skill to install an older version from the history of
+its SKILL.md (see --versions). Such installs are pinned: check still reports
+newer versions, but update leaves them alone. @latest installs the newest
+version and removes the pin.
 
 Tracking modes:
   version  compare the version in SKILL.md (default for versioned skills)
@@ -45,6 +52,8 @@ Tracking modes:
   none     never check for updates (default for unversioned skills)`,
 		Example: `  faehigkeiten install anthropics/skills pdf docx
   faehigkeiten install anthropics/skills --list
+  faehigkeiten install anthropics/skills pdf --versions
+  faehigkeiten install anthropics/skills pdf@1.2.0
   faehigkeiten install ./my-skills my-skill --global --agent claude-code,codex --track hash`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -61,12 +70,42 @@ Tracking modes:
 				printSkills(out, skills)
 				return nil
 			}
+			names := make([]string, len(args)-1)
+			pins := make([]string, len(args)-1)
+			pinned := false
+			for i, arg := range args[1:] {
+				names[i], pins[i] = app.SplitVersion(arg)
+				pinned = pinned || (pins[i] != "" && pins[i] != app.Latest)
+			}
+			if versions {
+				if len(names) != 1 || pins[0] != "" {
+					return errors.New("--versions needs exactly one skill name")
+				}
+				selected, err := app.Select(skills, names)
+				if err != nil {
+					return err
+				}
+				// The resolved ref shares the history installs use.
+				vs, err := a.Versions(cmd.Context(), co.URL, co.Ref, selected[0].Path, true)
+				if err != nil {
+					return err
+				}
+				printVersions(out, vs)
+				return nil
+			}
 			selected := skills
 			if !all {
 				if len(args) == 1 {
 					return fmt.Errorf("name the skills to install or pass --all (use --list to see %d available skills)", len(skills))
 				}
-				if selected, err = app.Select(skills, args[1:]); err != nil {
+				if selected, err = app.Select(skills, names); err != nil {
+					return err
+				}
+			} else {
+				if pinned {
+					return errors.New("--all cannot be combined with @version")
+				}
+				if pins, err = allPins(skills, names, pins); err != nil {
 					return err
 				}
 			}
@@ -92,17 +131,34 @@ Tracking modes:
 			if err != nil {
 				return err
 			}
-			for _, s := range selected {
-				tr := tracking
-				if tr == lock.TrackVersion && !s.HasVersion() {
-					tr = lock.TrackHash
-					fmt.Fprintf(cmd.ErrOrStderr(), "%s has no version, using hash tracking\n", s.Name)
-				}
-				e, err := in.Install(install.Request{Skill: s, Checkout: co, Agents: targets, Tracking: tr, Force: force})
+			refreshed := false
+			for i, s := range selected {
+				v := pins[i]
+				req, err := a.Prepare(cmd.Context(), in, co, s, app.Selector{Version: v}, !refreshed)
 				if err != nil {
 					return err
 				}
-				fmt.Fprintf(out, "installed %s (%s) for %s\n", e.Name, describeTracking(e), strings.Join(e.Agents, ", "))
+				// The history only needs updating once per source, which
+				// resolving a version does; keeping a pin does not.
+				refreshed = refreshed || (v != "" && v != app.Latest)
+				req.Agents, req.Tracking, req.Force = targets, tracking, force
+				switch {
+				case req.Pinned && v == "":
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s is %s and stays there (install %s@latest to unpin it)\n", s.Name, install.PinLabel(req.Skill.Version), s.Name)
+					fallthrough
+				case req.Pinned:
+					if tracking != "" && tracking != lock.TrackVersion {
+						fmt.Fprintf(cmd.ErrOrStderr(), "%s is pinned, using version tracking\n", s.Name)
+					}
+				case req.Tracking == lock.TrackVersion && !s.HasVersion():
+					req.Tracking = lock.TrackHash
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s has no version, using hash tracking\n", s.Name)
+				}
+				e, err := in.Install(req)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintf(out, "installed %s (%s) for %s\n", e.Name, install.Describe(e), strings.Join(e.Agents, ", "))
 			}
 			return in.Lock.Save()
 		},
@@ -114,25 +170,10 @@ Tracking modes:
 	cmd.Flags().BoolVar(&all, "all", false, "install every skill in the source")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "overwrite existing skill directories")
 	cmd.Flags().BoolVarP(&listOnly, "list", "l", false, "list skills in the source without installing")
+	cmd.Flags().BoolVar(&versions, "versions", false, "list the versions of a skill without installing")
+	cmd.MarkFlagsMutuallyExclusive("all", "versions")
+	cmd.MarkFlagsMutuallyExclusive("list", "versions")
 	return cmd
-}
-
-func describeTracking(e lock.Entry) string {
-	switch e.Tracking {
-	case lock.TrackVersion:
-		return "version " + e.Version
-	case lock.TrackHash:
-		return "hash " + shortHash(e.Hash)
-	}
-	return "untracked"
-}
-
-func shortHash(h string) string {
-	h = strings.TrimPrefix(h, skill.HashPrefix)
-	if len(h) > 12 {
-		return h[:12]
-	}
-	return h
 }
 
 func printSkills(w io.Writer, skills []skill.Skill) {
@@ -140,6 +181,43 @@ func printSkills(w io.Writer, skills []skill.Skill) {
 	fmt.Fprintln(tw, "NAME\tVERSION\tPATH\tDESCRIPTION")
 	for _, s := range skills {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Name, dash(s.Version), s.Path, truncate(s.Description, 70))
+	}
+	tw.Flush()
+}
+
+// allPins maps the version selectors given with --all (only @latest is
+// allowed there) to every skill, so naming pdf@latest unpins pdf.
+func allPins(skills []skill.Skill, names, versions []string) ([]string, error) {
+	latest := map[string]bool{}
+	for i, n := range names {
+		if versions[i] != app.Latest {
+			continue
+		}
+		named, err := app.Select(skills, []string{n})
+		if err != nil {
+			return nil, err
+		}
+		latest[named[0].Path] = true
+	}
+	out := make([]string, len(skills))
+	for i, s := range skills {
+		if latest[s.Path] {
+			out[i] = app.Latest
+		}
+	}
+	return out, nil
+}
+
+// printVersions lists versions and marks the one at the tip of the ref.
+func printVersions(w io.Writer, vs []source.Version) {
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "VERSION\tCOMMIT\tDATE")
+	for _, v := range vs {
+		latest := ""
+		if v.Latest {
+			latest = "\t(latest)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s%s\n", v.Version, source.ShortCommit(v.Commit), v.Date.Format(time.DateOnly), latest)
 	}
 	tw.Flush()
 }
@@ -188,7 +266,7 @@ func newListCommand() *cobra.Command {
 			tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 			fmt.Fprintln(tw, "NAME\tTRACKING\tAGENTS\tSOURCE")
 			for _, e := range in.Lock.Skills {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.Name, describeTracking(e), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.Name, install.Describe(e), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
 			}
 			for _, f := range found {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", f.Name, "not managed", strings.Join(f.Agents, ","), "-")
@@ -252,23 +330,20 @@ func printStatuses(w io.Writer, sts []update.Status) (available, failed int) {
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tTRACKING\tINSTALLED\tLATEST\tSTATUS")
 	for _, s := range sts {
-		status := "up to date"
-		switch {
-		case s.Err != nil:
+		var status string
+		if s.Err != nil {
 			status = "error: " + s.Err.Error()
 			failed++
-		case s.Available && s.Modified:
-			status = "update available (locally modified, updating overwrites your changes)"
-			available++
-		case s.Available:
-			status = "update available"
-			available++
-		case s.Modified:
-			status = "up to date (locally modified)"
+		} else {
+			status = describeStatus(s)
+			// Pinned skills are not updated, so they don't count as available.
+			if s.Updatable() {
+				available++
+			}
 		}
 		cur, latest := s.Current, s.Latest
 		if s.Entry.Tracking == lock.TrackHash {
-			cur, latest = shortHash(cur), shortHash(latest)
+			cur, latest = skill.ShortHash(cur), skill.ShortHash(latest)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.Entry.Name, s.Entry.Tracking, dash(cur), dash(latest), status)
 	}
@@ -276,16 +351,32 @@ func printStatuses(w io.Writer, sts []update.Status) (available, failed int) {
 	return available, failed
 }
 
+// describeStatus renders the notes of a status as "first (rest, …)".
+func describeStatus(s update.Status) string {
+	notes := s.Notes()
+	if s.Updatable() && s.Modified {
+		notes = append(notes, "updating overwrites your changes")
+	}
+	if len(notes) == 1 {
+		return notes[0]
+	}
+	return notes[0] + " (" + strings.Join(notes[1:], ", ") + ")"
+}
+
 func newUpdateCommand() *cobra.Command {
 	var (
 		scope scopeFlags
 		force bool
+		unpin bool
 	)
 	cmd := &cobra.Command{
 		Use:   "update [skill...]",
 		Short: "Update tracked skills (all with available updates by default)",
 		Long: `Update tracked skills. Skills whose installed files were edited locally are
 skipped with a warning unless --force is given, which overwrites the edits.
+
+Skills installed at a specific version are pinned and skipped. --unpin removes
+the pin of the named skills and updates them to the latest version.
 
 Exits with status 1 if any skill could not be checked or updated.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -301,13 +392,16 @@ Exits with status 1 if any skill could not be checked or updated.`,
 			if err != nil {
 				return err
 			}
+			if unpin && len(args) == 0 {
+				return errors.New("--unpin needs the names of the skills to unpin")
+			}
 			for _, name := range args {
 				if _, ok := in.Lock.Get(name); !ok {
 					return fmt.Errorf("skill %s is not installed in this target", name)
 				}
 			}
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
-			updated, failed := 0, 0
+			updated, failed, unpinned := 0, 0, 0
 			for _, s := range update.Check(cmd.Context(), a.Sources, in) {
 				if len(args) > 0 && !slices.Contains(args, s.Entry.Name) {
 					continue
@@ -317,14 +411,32 @@ Exits with status 1 if any skill could not be checked or updated.`,
 					failed++
 					continue
 				}
-				if !s.Available {
+				if s.Entry.Pinned && !unpin {
+					if s.Available {
+						fmt.Fprintf(errOut, "skipping %s: %s (use --unpin to update it)\n", s.Entry.Name, install.PinLabel(s.Entry.Version))
+					}
 					continue
 				}
-				if s.Modified && !force {
+				changes := s.Updatable() || (s.Entry.Pinned && s.UnpinChanges())
+				if !changes && !s.Entry.Pinned {
+					continue
+				}
+				if changes && s.Modified && !force {
 					fmt.Fprintf(errOut, "warning: skipping %s: it was modified locally and updating would overwrite your changes (use --force)\n", s.Entry.Name)
 					continue
 				}
-				e, err := update.Apply(in, s)
+				var e lock.Entry
+				if s.Entry.Pinned {
+					var reinstalled bool
+					e, reinstalled, err = update.Unpin(in, s)
+					if err == nil && !reinstalled {
+						unpinned++
+						fmt.Fprintf(out, "unpinned %s (already at the latest version %s)\n", e.Name, e.Version)
+						continue
+					}
+				} else {
+					e, err = update.Apply(in, s)
+				}
 				if err != nil {
 					fmt.Fprintf(errOut, "%s: %v\n", s.Entry.Name, err)
 					failed++
@@ -334,13 +446,14 @@ Exits with status 1 if any skill could not be checked or updated.`,
 				if s.Modified {
 					fmt.Fprintf(errOut, "warning: overwrote local changes to %s\n", e.Name)
 				}
-				fmt.Fprintf(out, "updated %s (%s)\n", e.Name, describeTracking(e))
+				fmt.Fprintf(out, "updated %s (%s)\n", e.Name, install.Describe(e))
 			}
-			if updated > 0 {
+			if updated+unpinned > 0 {
 				if err := in.Lock.Save(); err != nil {
 					return err
 				}
-			} else if failed == 0 {
+			}
+			if updated == 0 && unpinned == 0 && failed == 0 {
 				fmt.Fprintln(out, "nothing to update")
 			}
 			if failed > 0 {
@@ -351,6 +464,7 @@ Exits with status 1 if any skill could not be checked or updated.`,
 	}
 	scope.register(cmd)
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "also update skills with local changes, overwriting them")
+	cmd.Flags().BoolVar(&unpin, "unpin", false, "unpin the named skills and update them to the latest version")
 	return cmd
 }
 
@@ -650,7 +764,7 @@ reported.`,
 				if e.Source == "" {
 					fmt.Fprintf(out, "adopted %s (local only, untracked)\n", e.Name)
 				} else {
-					fmt.Fprintf(out, "adopted %s from %s (%s)\n", e.Name, source.DisplayName(e.Source), describeTracking(e))
+					fmt.Fprintf(out, "adopted %s from %s (%s)\n", e.Name, source.DisplayName(e.Source), install.Describe(e))
 				}
 			}
 			if len(errs) > 0 {

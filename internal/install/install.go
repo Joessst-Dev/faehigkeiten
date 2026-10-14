@@ -98,6 +98,27 @@ type Request struct {
 	Name string
 	// Force overwrites existing directories that are not managed by this lockfile.
 	Force bool
+	// Pinned records the installation as pinned to the skill's version. It
+	// implies version tracking.
+	Pinned bool
+}
+
+// PinLabel describes a skill pinned at version.
+func PinLabel(version string) string { return "pinned at " + version }
+
+// Describe summarizes how an installed skill is tracked, e.g. "version 1.2.0",
+// "pinned at 1.0.0", "hash 6a01b6dc757b" or "untracked".
+func Describe(e lock.Entry) string {
+	switch e.Tracking {
+	case lock.TrackVersion:
+		if e.Pinned {
+			return PinLabel(e.Version)
+		}
+		return "version " + e.Version
+	case lock.TrackHash:
+		return "hash " + skill.ShortHash(e.Hash)
+	}
+	return "untracked"
 }
 
 // DefaultTracking is version tracking for versioned skills and no tracking
@@ -142,6 +163,9 @@ type Installer struct {
 func (in *Installer) Install(req Request) (lock.Entry, error) {
 	if len(req.Agents) == 0 {
 		return lock.Entry{}, errors.New("no agents selected")
+	}
+	if req.Pinned {
+		req.Tracking = lock.TrackVersion
 	}
 	if req.Tracking == "" {
 		req.Tracking = DefaultTracking(req.Skill)
@@ -204,6 +228,7 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 		Ref:         req.Checkout.Ref,
 		Commit:      req.Checkout.Commit,
 		Tracking:    req.Tracking,
+		Pinned:      req.Pinned,
 		InstalledAt: in.now(),
 	}
 	for _, a := range req.Agents {

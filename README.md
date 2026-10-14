@@ -38,11 +38,12 @@ curl -fsSL https://raw.githubusercontent.com/Joessst-Dev/faehigkeiten/main/insta
 
 Run `faehigkeiten` (or `fgk`) without arguments to start the TUI:
 
-- **Browse repositories**: pick a repository, select skills with <kbd>space</kbd>, press <kbd>enter</kbd>
+- **Browse repositories**: pick a repository, select skills with <kbd>space</kbd>, press <kbd>enter</kbd>;
+  press <kbd>v</kbd> on a skill to install an older version
 - **Search skills**: type to search the known repositories; <kbd>tab</kbd> switches to skills.sh
 - **Add repository**: any source; it is saved and appears in the repository list
 - **Installed skills**: see and remove what is installed in the current target, including skills that were copied by hand or installed with another tool (marked *not managed*; press <kbd>m</kbd> to manage one, or select several with <kbd>space</kbd>/<kbd>a</kbd> and press <kbd>m</kbd> to manage or <kbd>d</kbd> to delete them together)
-- **Check for updates**: select and apply available updates
+- **Check for updates**: select and apply available updates; press <kbd>u</kbd> on a pinned skill to unpin and update it
 - **Change target**: switch between a project directory and the global scope
 
 The install wizard asks for the target (project or global), the agents, and the tracking mode.
@@ -56,10 +57,13 @@ fgk install anthropics/skills --list                     # show skills in a repo
 fgk install anthropics/skills pdf docx                    # install into the current project
 fgk install obra/superpowers --all -g -a claude-code,codex # install globally for two agents
 fgk install ./my-skills my-skill --track hash             # hash-track an unversioned skill
+fgk install anthropics/skills pdf --versions              # versions in the history of a skill
+fgk install anthropics/skills pdf@1.2.0                   # install (and pin) an older version
 fgk list                                                   # installed skills
 fgk check --exit-code                                      # exit 10 if updates are available, 1 on errors (CI)
 fgk update                                                 # apply all available updates
 fgk update --force                                         # …including skills you edited locally
+fgk update pdf --unpin                                     # unpin a skill and update it
 fgk remove pdf
 fgk adopt golang-cli                                       # manage a skill installed by hand or another tool
 fgk adopt my-skill --from my-org/skills --track hash       # …from an explicit source
@@ -104,6 +108,26 @@ skills:
 The lockfile also stores a hash of the installed content of every tracked skill. If you edit an
 installed skill, `check` and the TUI flag it as *locally modified*: `fgk update` skips it with a
 warning unless you pass `--force`, and the TUI shows a warning and does not preselect it.
+
+### Installing a specific version
+
+The versions of a skill are the values of `version` in the git history of its `SKILL.md`. Each
+version maps to the newest commit that still declared it, so fixes made without a version bump are
+included. `fgk install <source> <skill> --versions` lists them; `<skill>@<version>` installs one.
+
+Installs at an explicit version are **pinned** (`pinned: true` in the lockfile, with the commit of
+that version), even when it is the newest one. `fgk check` still shows when a newer version exists,
+but does not count it as an update, and `fgk update` skips pinned skills. Installing a pinned skill
+again without a version (from the same ref) keeps it at its pinned version.
+
+Unpin with `fgk update <skill> --unpin`, by installing `<skill>@latest`, by picking *latest
+(unpinned)* in the TUI's version list, or with <kbd>u</kbd> on the TUI's update screen.
+Local changes are protected as usual: `--unpin` skips modified skills unless you add `--force`, and
+the TUI asks before overwriting them.
+
+Listing versions needs the full history of the repository, so faehigkeiten keeps a separate full
+clone in its cache for it (and falls back to it when offline); normal installs keep using shallow
+clones. Only the skill's own directory is extracted for each pinned version.
 
 ### Managing existing skills
 
