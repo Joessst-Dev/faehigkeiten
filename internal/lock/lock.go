@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -60,7 +61,14 @@ type Entry struct {
 	Version  string   `yaml:"version,omitempty"`
 	Hash     string   `yaml:"hash,omitempty"`
 	// Pinned entries were installed at a chosen version and are not updated.
-	Pinned      bool      `yaml:"pinned,omitempty"`
+	Pinned bool `yaml:"pinned,omitempty"`
+	// License is the ID of the skill's license and LicenseFile its license
+	// file relative to the source root (see skill.License).
+	License     string `yaml:"license,omitempty"`
+	LicenseFile string `yaml:"license_file,omitempty"`
+	// NoLicense records that the skill has no license, unlike entries
+	// written before licenses were recorded.
+	NoLicense   bool      `yaml:"no_license,omitempty"`
 	InstalledAt time.Time `yaml:"installed_at"`
 }
 
@@ -132,7 +140,12 @@ func (e Entry) validate() error {
 	if e.Path != "" && e.Path != "." && !filepath.IsLocal(filepath.FromSlash(e.Path)) {
 		return fmt.Errorf("skill %s: invalid path %q", e.Name, e.Path)
 	}
-	for _, v := range append([]string{e.Source, e.Path, e.Ref, e.Commit, e.Version, e.Hash, string(e.Tracking)}, e.Agents...) {
+	// License files are read below the skill or source directory, so their
+	// path must be canonical: "skills/pdf/../../x" would pass a prefix check.
+	if f := e.LicenseFile; f != "" && (path.Clean(f) != f || !filepath.IsLocal(filepath.FromSlash(f))) {
+		return fmt.Errorf("skill %s: invalid license file %q", e.Name, f)
+	}
+	for _, v := range append([]string{e.Source, e.Path, e.Ref, e.Commit, e.Version, e.Hash, string(e.Tracking), e.License, e.LicenseFile}, e.Agents...) {
 		if hasControl(v) {
 			return fmt.Errorf("skill %s: invalid value %q", e.Name, v)
 		}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-git/go-git/v5"
 	. "github.com/onsi/ginkgo/v2"
@@ -60,6 +61,158 @@ var _ = Describe("CLI", func() {
 		Expect(out).To(ContainSubstring("alpha"))
 		Expect(out).To(ContainSubstring("1.0.0"))
 		Expect(out).To(ContainSubstring("skills/beta"))
+	})
+
+	Describe("licenses", func() {
+		const mit = "MIT License\n\nPermission is hereby granted, free of charge, to any person\nThe above copyright notice and this permission notice shall be included\n"
+
+		BeforeEach(func() {
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"LICENSE":                 "\x1b[31m" + mit,
+				"skills/beta/LICENSE.txt": "Beta terms\n",
+			}, "licenses")).To(Succeed())
+		})
+
+		It("shows them in lists", func() {
+			code, out, _ := run("install", origin, "--list")
+			Expect(code).To(Equal(0))
+			Expect(out).To(MatchRegexp(`alpha\s+1.0.0\s+MIT\s+skills/alpha`))
+			Expect(out).To(MatchRegexp(`beta\s+-\s+custom\s+skills/beta`))
+
+			code, _, errOut := run("install", origin, "--all", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			code, out, _ = run("list", "-p", project)
+			Expect(code).To(Equal(0))
+			Expect(out).To(MatchRegexp(`alpha\s+version 1.0.0\s+MIT\s+claude-code`))
+		})
+
+		It("prints the license of installed skills and of skills in a source", func() {
+			code, _, errOut := run("install", origin, "--all", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+
+			code, out, errOut := run("license", "alpha", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal(" [31m"+mit), "the repository license, without escape sequences")
+
+			code, out, errOut = run("license", "beta", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal("Beta terms\n"), "read from the installed copy")
+
+			code, out, errOut = run("license", origin, "alpha")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("Permission is hereby granted"))
+
+			code, _, errOut = run("license", "missing", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("not installed"))
+
+			code, _, errOut = run("license", origin, "alpha", "-g")
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("cannot be used with a source"))
+		})
+
+		editEntry := func(name string, change func(*lock.Entry)) {
+			lf, err := lock.Load(filepath.Join(project, lock.FileName))
+			Expect(err).NotTo(HaveOccurred())
+			e, _ := lf.Get(name)
+			change(&e)
+			lf.Upsert(e)
+			Expect(lf.Save()).To(Succeed())
+		}
+
+		It("reads the recorded repository license from the latest checkout when the installed commit is gone", func() {
+			code, _, errOut := run("install", origin, "alpha", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			editEntry("alpha", func(e *lock.Entry) { e.Commit = strings.Repeat("0", 40) })
+			code, out, errOut := run("license", "alpha", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("Permission is hereby granted"))
+			Expect(out).NotTo(ContainSubstring("note:"), "the note goes to stderr")
+			Expect(errOut).To(ContainSubstring("note: the installed commit 0000000 is unavailable"))
+		})
+
+		It("refuses tampered license fields in the lockfile", func() {
+			code, _, errOut := run("install", origin, "alpha", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			editEntry("alpha", func(e *lock.Entry) { e.LicenseFile = "skills/alpha/../../../../etc/passwd" })
+			code, _, errOut = run("list", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("invalid license file"))
+
+			lockPath := filepath.Join(project, lock.FileName)
+			data, err := os.ReadFile(lockPath)
+			Expect(err).NotTo(HaveOccurred())
+			data = []byte(strings.Replace(string(data), "license_file: skills/alpha/../../../../etc/passwd", "", 1))
+			data = []byte(strings.Replace(string(data), "license: MIT", `license: "\e]52;c;x\a"`, 1))
+			Expect(os.WriteFile(lockPath, data, 0o644)).To(Succeed())
+			code, _, errOut = run("list", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("invalid value"))
+		})
+
+		It("reads a license file deleted from the installed copy from the source", func() {
+			code, _, errOut := run("install", origin, "beta", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			Expect(os.Remove(filepath.Join(project, ".claude", "skills", "beta", "LICENSE.txt"))).To(Succeed())
+			code, out, errOut := run("license", "beta", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal("Beta terms\n"))
+		})
+
+		It("resolves entries recorded without a license at their installed commit", func() {
+			code, _, errOut := run("install", origin, "alpha", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			editEntry("alpha", func(e *lock.Entry) { e.License, e.LicenseFile = "", "" })
+			code, out, errOut := run("license", "alpha", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("Permission is hereby granted"))
+		})
+
+		It("does not take the license of a later commit for entries recorded without one", func() {
+			Expect(os.Remove(filepath.Join(origin, "LICENSE"))).To(Succeed())
+			Expect(testutil.Commit(repo, origin, nil, "unlicensed")).To(Succeed())
+			code, _, errOut := run("install", origin, "alpha", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			lf, err := lock.Load(filepath.Join(project, lock.FileName))
+			Expect(err).NotTo(HaveOccurred())
+			e, _ := lf.Get("alpha")
+			Expect(e.NoLicense).To(BeTrue(), "the absence of a license is recorded")
+
+			editEntry("alpha", func(e *lock.Entry) { e.NoLicense = false })
+			Expect(testutil.Commit(repo, origin, map[string]string{"LICENSE": mit}, "relicensed")).To(Succeed())
+			code, _, errOut = run("license", "alpha", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("no license"))
+		})
+
+		It("keeps a descriptive license field in full", func() {
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"skills/gamma/SKILL.md": "---\nname: gamma\ndescription: d\nlicense: Proprietary. Internal use only\n---\n",
+				"skills/gamma/LICENSE":  mit,
+			}, "gamma")).To(Succeed())
+			Expect(os.Remove(filepath.Join(origin, "skills", "gamma", "LICENSE"))).To(Succeed())
+			Expect(testutil.Commit(repo, origin, nil, "drop gamma license")).To(Succeed())
+			Expect(os.Remove(filepath.Join(origin, "LICENSE"))).To(Succeed())
+			Expect(testutil.Commit(repo, origin, nil, "drop license")).To(Succeed())
+
+			code, _, errOut := run("install", origin, "gamma", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			code, out, _ := run("list", "-p", project)
+			Expect(code).To(Equal(0))
+			Expect(out).To(MatchRegexp(`gamma\s+untracked\s+Proprietary\s+claude-code`))
+			code, out, errOut = run("license", "gamma", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal("Proprietary. Internal use only\n"))
+		})
+
+		It("finds skills of a source by their directory name", func() {
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"skills/delta-dir/SKILL.md": testutil.SkillMD("delta", "d", ""),
+			}, "delta")).To(Succeed())
+			code, out, errOut := run("license", origin, "delta-dir")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("Permission is hereby granted"))
+		})
 	})
 
 	It("requires skill names or --all", func() {
@@ -295,7 +448,7 @@ var _ = Describe("CLI", func() {
 		})).To(Succeed())
 		code, out, _ := run("list", "-p", project)
 		Expect(code).To(Equal(0))
-		Expect(out).To(MatchRegexp(`handmade\s+not managed\s+claude-code`))
+		Expect(out).To(MatchRegexp(`handmade\s+not managed\s+-\s+claude-code`))
 	})
 
 	Describe("adopt", func() {

@@ -50,7 +50,7 @@ func (s *skillsScreen) Help() string {
 	if s.loading {
 		return ""
 	}
-	return "space select • a all • enter install • v versions • / filter • r refresh"
+	return "space select • a all • enter install • v versions • l license • / filter • r refresh"
 }
 
 func (s *skillsScreen) Init() tea.Cmd { return s.load(false) }
@@ -82,7 +82,7 @@ func (s *skillsScreen) Update(msg tea.Msg) tea.Cmd {
 		s.co = msg.co
 		items := make([]pickItem, 0, len(msg.skills))
 		for _, sk := range msg.skills {
-			items = append(items, pickItem{Title: sk.Name, Desc: sk.Description, Badge: versionBadge(sk.Version), Value: sk})
+			items = append(items, pickItem{Title: sk.Name, Desc: withLicense(sk.Description, sk.License.Label()), Badge: versionBadge(sk.Version), Value: sk})
 		}
 		s.list.SetItems(items)
 		if s.focus != "" {
@@ -113,6 +113,12 @@ func (s *skillsScreen) Update(msg tea.Msg) tea.Cmd {
 				return nil
 			}
 			return push(newVersionsScreen(s.env, s.co, it.Value.(skill.Skill)))
+		case "l":
+			it, ok := s.list.Current()
+			if !ok || s.co == nil {
+				return nil
+			}
+			return push(licenseOfSkill(s.env, s.co, it.Value.(skill.Skill)))
 		case "enter":
 			if s.co == nil {
 				return nil
@@ -132,6 +138,17 @@ func (s *skillsScreen) Update(msg tea.Msg) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// withLicense appends a license label to a list item description.
+func withLicense(desc, label string) string {
+	switch {
+	case label == "":
+		return desc
+	case desc == "":
+		return label
+	}
+	return desc + " • " + label
 }
 
 func versionBadge(v string) string {
@@ -350,7 +367,7 @@ func (s *searchScreen) Help() string {
 	if s.remote {
 		mode = "tab search known repositories"
 	}
-	return "↑/↓ move • enter open • " + mode + " • ctrl+r refresh index"
+	return "↑/↓ move • enter open • ctrl+l license • " + mode + " • ctrl+r refresh index"
 }
 
 func (s *searchScreen) Init() tea.Cmd {
@@ -423,7 +440,7 @@ func (s *searchScreen) refreshLocal() {
 		if i == 200 {
 			break
 		}
-		items = append(items, pickItem{Title: h.Name, Desc: h.Repo.Name + " — " + h.Description, Badge: versionBadge(h.Version), Value: h})
+		items = append(items, pickItem{Title: h.Name, Desc: withLicense(h.Repo.Name+" — "+h.Description, h.License), Badge: versionBadge(h.Version), Value: h})
 	}
 	s.list.SetItems(items)
 }
@@ -472,6 +489,13 @@ func (s *searchScreen) Update(msg tea.Msg) tea.Cmd {
 				return s.searchRemote()
 			}
 			s.refreshLocal()
+			return nil
+		case "ctrl+l":
+			if it, ok := s.list.Current(); ok {
+				if ls := licenseOfHit(s.env, it.Value); ls != nil {
+					return push(ls)
+				}
+			}
 			return nil
 		case "ctrl+r":
 			if s.remote {

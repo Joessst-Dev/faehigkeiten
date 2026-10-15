@@ -36,6 +36,9 @@ type Skill struct {
 	Path string
 	// Dir is the absolute directory on disk.
 	Dir string
+	// License is the license of the skill. Parse only records the license
+	// field of the frontmatter; ResolveLicense completes it.
+	License License
 }
 
 // ShortHash abbreviates a content hash to its first twelve hex digits,
@@ -52,6 +55,7 @@ type frontmatter struct {
 	Name        string         `yaml:"name"`
 	Description string         `yaml:"description"`
 	Version     any            `yaml:"version"`
+	License     any            `yaml:"license"`
 	Metadata    map[string]any `yaml:"metadata"`
 }
 
@@ -108,6 +112,7 @@ func Parse(data []byte) (Skill, error) {
 		Name:        strings.TrimSpace(Clean(fm.Name)),
 		Description: strings.TrimSpace(Clean(fm.Description)),
 		Version:     scalar(fm.Version),
+		License:     License{ID: scalar(fm.License)},
 	}
 	if s.Version == "" && fm.Metadata != nil {
 		s.Version = scalar(fm.Metadata["version"])
@@ -155,6 +160,7 @@ func Discover(root string) ([]Skill, error) {
 		return nil, err
 	}
 	var skills []Skill
+	licenses := licenseFinder{}
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -186,6 +192,7 @@ func Discover(root string) ([]Skill, error) {
 		}
 		s.Dir = dir
 		s.Path = filepath.ToSlash(rel)
+		s.resolveLicense(root, licenses)
 		skills = append(skills, s)
 		if dir != root {
 			return filepath.SkipDir

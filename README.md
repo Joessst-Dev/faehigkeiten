@@ -7,6 +7,7 @@ for many coding agents at once, and keeps them up to date.
 - **Browse and search** the biggest public skill repositories (Anthropic, OpenAI, Vercel, obra/superpowers, Hugging Face, …), or search all of GitHub via [skills.sh](https://skills.sh).
 - **Add any repository**: `owner/repo`, any git URL (GitHub, GitLab, self-hosted, SSH) or a local directory.
 - **Install per project or globally** for Claude Code, Codex, GitHub Copilot, Cursor, Gemini CLI, OpenCode, Windsurf, Goose, Kiro, Roo Code, Amp and the cross-agent `.agents/skills` convention.
+- **See licenses**: the license of every skill, from its `SKILL.md`, its own license file or its repository's.
 - **Track updates** per skill, by **version** (from `SKILL.md` frontmatter), by **content hash** (for skills without a version), or not at all.
 
 ## Install
@@ -39,10 +40,10 @@ curl -fsSL https://raw.githubusercontent.com/Joessst-Dev/faehigkeiten/main/insta
 Run `faehigkeiten` (or `fgk`) without arguments to start the TUI:
 
 - **Browse repositories**: pick a repository, select skills with <kbd>space</kbd>, press <kbd>enter</kbd>;
-  press <kbd>v</kbd> on a skill to install an older version
-- **Search skills**: type to search the known repositories; <kbd>tab</kbd> switches to skills.sh
+  press <kbd>v</kbd> on a skill to install an older version and <kbd>l</kbd> to read its license
+- **Search skills**: type to search the known repositories; <kbd>tab</kbd> switches to skills.sh; <kbd>ctrl+l</kbd> shows the license of a result
 - **Add repository**: any source; it is saved and appears in the repository list
-- **Installed skills**: see and remove what is installed in the current target, including skills that were copied by hand or installed with another tool (marked *not managed*; press <kbd>m</kbd> to manage one, or select several with <kbd>space</kbd>/<kbd>a</kbd> and press <kbd>m</kbd> to manage or <kbd>d</kbd> to delete them together)
+- **Installed skills**: see and remove what is installed in the current target, including skills that were copied by hand or installed with another tool (marked *not managed*; press <kbd>l</kbd> to read a skill's license, <kbd>m</kbd> to manage one, or select several with <kbd>space</kbd>/<kbd>a</kbd> and press <kbd>m</kbd> to manage or <kbd>d</kbd> to delete them together)
 - **Check for updates**: select and apply available updates; press <kbd>u</kbd> on a pinned skill to unpin and update it
 - **Change target**: switch between a project directory and the global scope
 
@@ -60,6 +61,8 @@ fgk install ./my-skills my-skill --track hash             # hash-track an unvers
 fgk install anthropics/skills pdf --versions              # versions in the history of a skill
 fgk install anthropics/skills pdf@1.2.0                   # install (and pin) an older version
 fgk list                                                   # installed skills
+fgk license pdf                                            # license of an installed skill
+fgk license anthropics/skills pdf                          # …or of a skill in a repository
 fgk check --exit-code                                      # exit 10 if updates are available, 1 on errors (CI)
 fgk update                                                 # apply all available updates
 fgk update --force                                         # …including skills you edited locally
@@ -96,6 +99,8 @@ skills:
     agents: [claude-code]
     tracking: hash
     hash: sha256:6a01b6dc757b8856d7eba5e9985d8550783f946d7afdf86402ba324b93239fc0
+    license: Apache-2.0
+    license_file: LICENSE
     installed_at: 2026-10-08T18:52:16Z
 ```
 
@@ -145,6 +150,25 @@ one records it in the lockfile **without changing its files**:
   with the same name never overwrites yours on the next update. The TUI lets you pick sources for the
   rest one by one or keep them local only; the CLI skips them and prints the command to adopt each.
 - Without `--track`, versioned skills track their version and the others a content hash.
+
+## Licenses
+
+The license of a skill is taken from, in order:
+
+1. the `license` field of its `SKILL.md`, when it names a license (an SPDX identifier such as `MIT`
+   or an expression such as `MIT OR Apache-2.0`),
+2. a `LICENSE`, `LICENSE.txt`, `LICENSE.md` or `COPYING` file in the skill directory,
+3. the same files at the root of its repository.
+
+Well-known license texts (MIT, Apache-2.0, BSD, ISC, MPL, GPL, LGPL, AGPL, Unlicense, CC0, CC-BY) are
+recognised and shown by their SPDX identifier; other license files are shown as *custom*. When the
+`license` field is a sentence such as `Complete terms in LICENSE.txt` or a file name such as
+`LICENSE-MIT`, the file it refers to decides. A license file of another well-known license than the
+one the field names is ignored.
+Lists show the license in a `LICENSE` column (CLI) or next to the description (TUI); `fgk license`
+and <kbd>l</kbd> in the TUI print the full text. The license is recorded in the lockfile at install
+time (`no_license: true` for skills without one). Searching for a license name such as `mit` or
+`apache` also finds the skills under that license.
 
 ## Configuration
 

@@ -76,6 +76,14 @@ var _ = Describe("Installer", func() {
 		Expect(ok).To(BeTrue())
 	})
 
+	It("records the license", func() {
+		Expect(testutil.WriteFiles(repoDir, map[string]string{"LICENSE": "Permission is hereby granted, free of charge\nThe above copyright notice and this permission notice shall be included"})).To(Succeed())
+		e, err := in.Install(install.Request{Skill: find("pdf"), Checkout: co, Agents: []agent.Agent{claude}})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(install.License(e)).To(Equal(skill.License{ID: "MIT", File: "LICENSE"}))
+		Expect(e.LicenseFile).To(Equal("LICENSE"))
+	})
+
 	It("stores a content hash when hash tracking is chosen", func() {
 		e, err := in.Install(install.Request{Skill: plain, Checkout: co, Agents: []agent.Agent{claude}, Tracking: lock.TrackHash})
 		Expect(err).NotTo(HaveOccurred())
@@ -279,6 +287,7 @@ var _ = Describe("Installer", func() {
 				".claude/skills/manual/SKILL.md":  testutil.SkillMD("manual", "Copied by hand", "0.1.0"),
 				".agents/skills/manual/SKILL.md":  testutil.SkillMD("manual", "Copied by hand", "0.1.0"),
 				".agents/skills/other/SKILL.md":   testutil.SkillMD("other", "", ""),
+				".agents/skills/other/LICENSE":    "GNU General Public License\nVersion 3",
 				".agents/skills/pdf/SKILL.md":     testutil.SkillMD("pdf", "unmanaged copy for another agent", ""),
 				".claude/skills/notes.txt":        "not a skill",
 				".claude/skills/empty/readme.md":  "no SKILL.md",
@@ -298,6 +307,8 @@ var _ = Describe("Installer", func() {
 				filepath.Join(project, ".agents", "skills", "manual"),
 			))
 			Expect(manual.Version).To(Equal("0.1.0"))
+			Expect(manual.License().Label()).To(BeEmpty())
+			Expect(found[1].License()).To(Equal(skill.License{ID: "GPL-3.0", File: "LICENSE"}))
 
 			By("leaving copies of managed skills out of the adoptable ones")
 			var adoptable []string
