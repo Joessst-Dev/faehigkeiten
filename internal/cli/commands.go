@@ -178,9 +178,9 @@ Tracking modes:
 
 func printSkills(w io.Writer, skills []skill.Skill) {
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tVERSION\tPATH\tDESCRIPTION")
+	fmt.Fprintln(tw, "NAME\tVERSION\tLICENSE\tPATH\tDESCRIPTION")
 	for _, s := range skills {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", s.Name, dash(s.Version), s.Path, truncate(s.Description, 70))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.Name, dash(s.Version), licenseColumn(s.License.Label()), s.Path, truncate(s.Description, 70))
 	}
 	tw.Flush()
 }
@@ -221,6 +221,8 @@ func printVersions(w io.Writer, vs []source.Version) {
 	}
 	tw.Flush()
 }
+
+func licenseColumn(label string) string { return dash(truncate(label, 20)) }
 
 func dash(s string) string {
 	if s == "" {
@@ -264,17 +266,86 @@ func newListCommand() *cobra.Command {
 				return nil
 			}
 			tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tTRACKING\tAGENTS\tSOURCE")
+			fmt.Fprintln(tw, "NAME\tTRACKING\tLICENSE\tAGENTS\tSOURCE")
 			for _, e := range in.Lock.Skills {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", e.Name, install.Describe(e), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Name, install.Describe(e), licenseColumn(e.License), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
 			}
 			for _, f := range found {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", f.Name, "not managed", strings.Join(f.Agents, ","), "-")
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", f.Name, "not managed", licenseColumn(f.License.Label()), strings.Join(f.Agents, ","), "-")
 			}
 			return tw.Flush()
 		},
 	}
 	scope.register(cmd)
+	return cmd
+}
+
+func newLicenseCommand() *cobra.Command {
+	var (
+		scope scopeFlags
+		ref   string
+	)
+	cmd := &cobra.Command{
+		Use:   "license [source] <skill>",
+		Short: "Show the license of a skill",
+		Long: `Print the license of an installed skill, or with a source, of a skill in
+that source. The license is the license file of the skill, or of its
+repository when the skill has none, or else the license field of its
+SKILL.md.`,
+		Example: `  faehigkeiten license pdf
+  faehigkeiten license anthropics/skills pdf`,
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a, err := app.New()
+			if err != nil {
+				return err
+			}
+			var text string
+			if len(args) == 2 {
+				co, skills, err := a.Load(cmd.Context(), args[0], ref, false)
+				if err != nil {
+					return err
+				}
+				selected, err := app.Select(skills, args[1:])
+				if err != nil {
+					return err
+				}
+				if text, err = app.LicenseText(co.Dir, selected[0].License); err != nil {
+					return fmt.Errorf("%s: %w", selected[0].Name, err)
+				}
+			} else {
+				if ref != "" {
+					return errors.New("--ref needs a source")
+				}
+				t, err := scope.target(a)
+				if err != nil {
+					return err
+				}
+				in, err := a.Installer(t)
+				if err != nil {
+					return err
+				}
+				name := args[0]
+				if e, ok := in.Lock.Get(name); ok {
+					text, err = a.EntryLicenseText(cmd.Context(), in, e)
+				} else {
+					found := in.Unmanaged()
+					i := slices.IndexFunc(found, func(f install.Found) bool { return f.Name == name })
+					if i < 0 {
+						return fmt.Errorf("skill %s is not installed in this target", name)
+					}
+					text, err = app.FoundLicenseText(found[i])
+				}
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
+				}
+			}
+			_, err = fmt.Fprint(cmd.OutOrStdout(), text)
+			return err
+		},
+	}
+	scope.register(cmd)
+	cmd.Flags().StringVar(&ref, "ref", "", "branch or tag of the source")
 	return cmd
 }
 
@@ -542,9 +613,9 @@ func newSearchCommand() *cobra.Command {
 			if len(hits) > limit {
 				hits = hits[:limit]
 			}
-			fmt.Fprintln(tw, "NAME\tREPO\tVERSION\tDESCRIPTION")
+			fmt.Fprintln(tw, "NAME\tREPO\tVERSION\tLICENSE\tDESCRIPTION")
 			for _, h := range hits {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", h.Name, h.Repo.Name, dash(h.Version), truncate(h.Description, 60))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", h.Name, h.Repo.Name, dash(h.Version), licenseColumn(h.License), truncate(h.Description, 60))
 			}
 			return tw.Flush()
 		},

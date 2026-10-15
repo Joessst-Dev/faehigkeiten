@@ -60,7 +60,11 @@ type Entry struct {
 	Version  string   `yaml:"version,omitempty"`
 	Hash     string   `yaml:"hash,omitempty"`
 	// Pinned entries were installed at a chosen version and are not updated.
-	Pinned      bool      `yaml:"pinned,omitempty"`
+	Pinned bool `yaml:"pinned,omitempty"`
+	// License is the label of the skill's license (see skill.License) and
+	// LicenseFile its license file relative to the source root.
+	License     string    `yaml:"license,omitempty"`
+	LicenseFile string    `yaml:"license_file,omitempty"`
 	InstalledAt time.Time `yaml:"installed_at"`
 }
 

@@ -117,6 +117,7 @@ func compare(st *Status, co *source.Checkout) {
 		return
 	}
 	s.Dir, s.Path = dir, e.Path
+	s.ResolveLicense(co.Dir)
 	st.skill = s
 
 	switch e.Tracking {

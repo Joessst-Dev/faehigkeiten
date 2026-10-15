@@ -109,6 +109,15 @@ var _ = Describe("Versions", func() {
 			Expect(again.Dir).To(Equal(co.Dir))
 		})
 
+		It("writes the license files of the repository root", func() {
+			commit("license", map[string]string{"LICENSE": "MIT", "LICENSE-THIRD-PARTY": "other"})
+			co, err := m.FetchCommit(ctx, testutil.FileURL(origin), "", commits["license"], "skills/a")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(os.ReadFile(filepath.Join(co.Dir, "LICENSE"))).To(BeEquivalentTo("MIT"))
+			Expect(filepath.Join(co.Dir, "LICENSE-THIRD-PARTY")).NotTo(BeAnExistingFile())
+			Expect(filepath.Join(co.Dir, "README.md")).NotTo(BeAnExistingFile())
+		})
+
 		It("fetches commits newer than the cached history", func() {
 			url := testutil.FileURL(origin)
 			_, err := m.FetchCommit(ctx, url, "", commits["1.0.0"], "skills/a")

@@ -62,6 +62,51 @@ var _ = Describe("CLI", func() {
 		Expect(out).To(ContainSubstring("skills/beta"))
 	})
 
+	Describe("licenses", func() {
+		const mit = "MIT License\n\nPermission is hereby granted, free of charge, to any person\nThe above copyright notice and this permission notice shall be included\n"
+
+		BeforeEach(func() {
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"LICENSE":                 "\x1b[31m" + mit,
+				"skills/beta/LICENSE.txt": "Beta terms\n",
+			}, "licenses")).To(Succeed())
+		})
+
+		It("shows them in lists", func() {
+			code, out, _ := run("install", origin, "--list")
+			Expect(code).To(Equal(0))
+			Expect(out).To(MatchRegexp(`alpha\s+1.0.0\s+MIT\s+skills/alpha`))
+			Expect(out).To(MatchRegexp(`beta\s+-\s+custom\s+skills/beta`))
+
+			code, _, errOut := run("install", origin, "--all", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			code, out, _ = run("list", "-p", project)
+			Expect(code).To(Equal(0))
+			Expect(out).To(MatchRegexp(`alpha\s+version 1.0.0\s+MIT\s+claude-code`))
+		})
+
+		It("prints the license of installed skills and of skills in a source", func() {
+			code, _, errOut := run("install", origin, "--all", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+
+			code, out, errOut := run("license", "alpha", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal(" [31m"+mit), "the repository license, without escape sequences")
+
+			code, out, errOut = run("license", "beta", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal("Beta terms\n"), "read from the installed copy")
+
+			code, out, errOut = run("license", origin, "alpha")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("Permission is hereby granted"))
+
+			code, _, errOut = run("license", "missing", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("not installed"))
+		})
+	})
+
 	It("requires skill names or --all", func() {
 		code, _, errOut := run("install", origin, "-p", project)
 		Expect(code).To(Equal(1))
@@ -295,7 +340,7 @@ var _ = Describe("CLI", func() {
 		})).To(Succeed())
 		code, out, _ := run("list", "-p", project)
 		Expect(code).To(Equal(0))
-		Expect(out).To(MatchRegexp(`handmade\s+not managed\s+claude-code`))
+		Expect(out).To(MatchRegexp(`handmade\s+not managed\s+-\s+claude-code`))
 	})
 
 	Describe("adopt", func() {

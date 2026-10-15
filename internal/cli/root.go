@@ -81,6 +81,7 @@ Run without arguments to start the interactive TUI.`,
 	root.AddCommand(
 		newInstallCommand(),
 		newListCommand(),
+		newLicenseCommand(),
 		newCheckCommand(),
 		newUpdateCommand(),
 		newRemoveCommand(),

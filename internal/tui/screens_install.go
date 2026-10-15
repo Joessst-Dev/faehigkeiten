@@ -414,10 +414,10 @@ func (s *installedScreen) Help() string {
 	}
 	if it, ok := s.list.Current(); ok {
 		if _, unmanaged := it.Value.(install.Found); unmanaged {
-			return "space select • a select all • m manage • d remove • u check updates • t change target • / filter"
+			return "space select • a select all • m manage • l license • d remove • u check updates • t change target • / filter"
 		}
 	}
-	return "d remove • u check updates • t change target • / filter"
+	return "l license • d remove • u check updates • t change target • / filter"
 }
 
 func (s *installedScreen) reload() {
@@ -442,7 +442,7 @@ func (s *installedScreen) reload() {
 		items = append(items, pickItem{
 			Title:   e.Name,
 			Badge:   install.Describe(e),
-			Desc:    source.DisplayName(e.Source) + " • " + strings.Join(e.Agents, ", "),
+			Desc:    withLicense(source.DisplayName(e.Source)+" • "+strings.Join(e.Agents, ", "), e.License),
 			NoCheck: true,
 			Value:   e,
 		})
@@ -452,6 +452,7 @@ func (s *installedScreen) reload() {
 		if f.Description != "" {
 			desc += " • " + f.Description
 		}
+		desc = withLicense(desc, f.License.Label())
 		it := pickItem{Title: f.Name, Badge: "not managed", Desc: desc, Checked: checked[f.Name], Value: f}
 		if _, managed := in.Lock.Get(f.Name); managed {
 			// Another copy of a managed skill: removable, but not adoptable.
@@ -544,6 +545,12 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 		if it, ok := s.list.Current(); ok {
 			if f, ok := it.Value.(install.Found); ok {
 				return push(newAdoptScreen(s.env, s.in, f))
+			}
+		}
+	case "l":
+		if it, ok := s.list.Current(); ok {
+			if ls := licenseOfInstalled(s.env, s.in, it.Value); ls != nil {
+				return push(ls)
 			}
 		}
 	case "u":

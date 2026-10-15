@@ -364,6 +364,35 @@ var _ = Describe("TUI", func() {
 		Expect(filepath.Join(a.Home, ".claude", "skills", "beta", "SKILL.md")).To(BeAnExistingFile())
 	})
 
+	It("shows licenses of repository and installed skills", func() {
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"LICENSE": "Apache License\nVersion 2.0, January 2004\nfull terms",
+		}, "license")).To(Succeed())
+		addRepo()
+		Expect(d.view()).To(ContainSubstring("Versioned skill • Apache-2.0"))
+		d.keys("l")
+		Expect(d.view()).To(ContainSubstring("full terms"))
+		d.keys("esc", "enter", "enter", "enter", "enter", "enter", "enter") // install alpha
+		Expect(d.view()).To(ContainSubstring("✓ alpha"))
+		d.keys("enter", "esc", "esc")
+
+		d.keys("down", "enter") // Installed skills
+		Expect(d.view()).To(ContainSubstring("Apache-2.0"))
+		d.keys("l")
+		Expect(d.view()).To(ContainSubstring("alpha license"))
+		Expect(d.view()).To(ContainSubstring("full terms"))
+		d.keys("esc")
+		Expect(d.view()).To(ContainSubstring("lockfile:"))
+	})
+
+	It("reports skills without a license", func() {
+		Expect(testutil.WriteFiles(project, map[string]string{
+			".claude/skills/handmade/SKILL.md": testutil.SkillMD("handmade", "Copied manually", ""),
+		})).To(Succeed())
+		d.keys("down", "down", "down", "enter", "l") // Installed skills
+		Expect(d.view()).To(ContainSubstring("declares no license"))
+	})
+
 	It("shows and removes installed skills", func() {
 		addRepo()
 		d.keys("down", "enter", "enter", "enter", "enter") // beta → project → dir → agents

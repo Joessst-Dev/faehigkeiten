@@ -185,6 +185,7 @@ func (a *App) LoadCommit(ctx context.Context, src, ref, path, commit string) (*s
 		return nil, skill.Skill{}, fmt.Errorf("skill %s at %s: %w", path, commit, err)
 	}
 	s.Dir, s.Path = dir, path
+	s.ResolveLicense(co.Dir)
 	return co, s, nil
 }
 

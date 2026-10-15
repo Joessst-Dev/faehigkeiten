@@ -107,7 +107,7 @@ func (m *Manager) FetchCommit(ctx context.Context, src, ref, commit, skillPath s
 	if err != nil {
 		return nil, fmt.Errorf("commit %s of %s: %w", commit, DisplayName(src), err)
 	}
-	if err := writeTree(c, path.Join(h.prefix, skillPath), dir); err != nil {
+	if err := writeTree(c, path.Join(h.prefix, skillPath), h.prefix, dir); err != nil {
 		return nil, err
 	}
 	return co, nil
@@ -321,12 +321,15 @@ func fileVersion(c *object.Commit, file string) string {
 
 // writeTree writes the files below the slash-separated directory sub of
 // commit c ("" or "." for all) into dir, keeping their paths relative to the
-// repository root. The directory is created atomically.
-func writeTree(c *object.Commit, sub, dir string) error {
-	tree, err := c.Tree()
+// repository root. The license files directly in the directory licenses are
+// written too, so the license of a skill without its own can be found. The
+// directory is created atomically.
+func writeTree(c *object.Commit, sub, licenses, dir string) error {
+	root, err := c.Tree()
 	if err != nil {
 		return err
 	}
+	tree := root
 	if sub = path.Clean(sub); sub != "." {
 		if tree, err = tree.Tree(sub); err != nil {
 			return fmt.Errorf("%s at commit %s: %w", sub, c.Hash, err)
@@ -356,12 +359,44 @@ func writeTree(c *object.Commit, sub, dir string) error {
 	if err != nil {
 		return err
 	}
+	if licenses = path.Clean(licenses); licenses != path.Clean(sub) {
+		if err := writeLicenses(c, root, licenses, tmp); err != nil {
+			return err
+		}
+	}
 	if err := os.Rename(tmp, dir); err != nil {
 		if _, statErr := os.Stat(dir); statErr == nil {
 			// Another process wrote the same commit first.
 			return nil
 		}
 		return err
+	}
+	return nil
+}
+
+// writeLicenses writes the license files directly in the directory dir of
+// commit c below tmp.
+func writeLicenses(c *object.Commit, root *object.Tree, dir, tmp string) error {
+	tree := root
+	if dir != "." {
+		var err error
+		if tree, err = root.Tree(dir); err != nil {
+			// The source directory itself is missing; nothing to add.
+			return nil
+		}
+	}
+	for _, e := range tree.Entries {
+		if e.Mode != filemode.Regular || !skill.IsLicenseFile(e.Name) {
+			continue
+		}
+		f, err := tree.TreeEntryFile(&e)
+		if err != nil {
+			return fmt.Errorf("%s at commit %s: %w", path.Join(dir, e.Name), c.Hash, err)
+		}
+		name := filepath.Join(tmp, filepath.FromSlash(path.Join(dir, e.Name)))
+		if err := writeBlob(f, name); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
 	}
 	return nil
 }

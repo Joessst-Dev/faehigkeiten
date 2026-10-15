@@ -1,0 +1,142 @@
+package tui
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/Joessst-Dev/faehigkeiten/internal/app"
+	"github.com/Joessst-Dev/faehigkeiten/internal/install"
+	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
+	"github.com/Joessst-Dev/faehigkeiten/internal/registry"
+	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
+	"github.com/Joessst-Dev/faehigkeiten/internal/source"
+)
+
+// ---- license text of a skill ----
+
+type licenseLoadedMsg struct {
+	text string
+	err  error
+}
+
+type licenseScreen struct {
+	env     *env
+	name    string
+	load    func() (string, error)
+	loading bool
+	spin    spinner.Model
+	view    viewport.Model
+	text    string
+	width   int // width text was wrapped for
+	err     error
+}
+
+func newLicenseScreen(e *env, name string, load func() (string, error)) *licenseScreen {
+	return &licenseScreen{env: e, name: name, load: load, spin: newSpinner(), view: viewport.New(0, 0)}
+}
+
+// licenseOfSkill shows the license of a skill in a checkout.
+func licenseOfSkill(e *env, co *source.Checkout, s skill.Skill) *licenseScreen {
+	return newLicenseScreen(e, s.Name, func() (string, error) { return app.LicenseText(co.Dir, s.License) })
+}
+
+// licenseOfInstalled shows the license of a lockfile entry or unmanaged skill.
+func licenseOfInstalled(e *env, in *install.Installer, v any) *licenseScreen {
+	switch v := v.(type) {
+	case lock.Entry:
+		return newLicenseScreen(e, v.Name, func() (string, error) { return e.app.EntryLicenseText(e.ctx, in, v) })
+	case install.Found:
+		return newLicenseScreen(e, v.Name, func() (string, error) { return app.FoundLicenseText(v) })
+	}
+	return nil
+}
+
+// licenseOfHit shows the license of a search result, fetching its repository.
+func licenseOfHit(e *env, v any) *licenseScreen {
+	var src, ref, sel, name string
+	switch v := v.(type) {
+	case registry.Entry:
+		src, ref, sel, name = v.Repo.URL, v.Repo.Ref, v.Path, v.Name
+	case registry.RemoteSkill:
+		src, sel, name = "https://github.com/"+v.Source, v.Name, v.Name
+	default:
+		return nil
+	}
+	return newLicenseScreen(e, name, func() (string, error) {
+		co, skills, err := e.app.Load(e.ctx, src, ref, false)
+		if err != nil {
+			return "", err
+		}
+		selected, err := app.Select(skills, []string{sel})
+		if err != nil {
+			return "", err
+		}
+		return app.LicenseText(co.Dir, selected[0].License)
+	})
+}
+
+func (s *licenseScreen) Title() string { return s.name + " license" }
+func (s *licenseScreen) Help() string {
+	if s.loading || s.err != nil {
+		return ""
+	}
+	return "↑/↓ scroll • pgup/pgdown page"
+}
+
+func (s *licenseScreen) Init() tea.Cmd {
+	s.loading = true
+	load := s.load
+	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+		text, err := load()
+		return licenseLoadedMsg{text, err}
+	}))
+}
+
+func (s *licenseScreen) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		if !s.loading {
+			return nil
+		}
+		var cmd tea.Cmd
+		s.spin, cmd = s.spin.Update(msg)
+		return cmd
+	case licenseLoadedMsg:
+		s.loading, s.text, s.err = false, msg.text, msg.err
+		s.width = 0
+		return nil
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "esc", "q":
+			return pop
+		}
+		var cmd tea.Cmd
+		s.view, cmd = s.view.Update(msg)
+		return cmd
+	}
+	return nil
+}
+
+func (s *licenseScreen) View() string {
+	if s.loading {
+		return s.spin.View() + " loading license …"
+	}
+	if errors.Is(s.err, app.ErrNoLicense) {
+		return subtleStyle.Render(fmt.Sprintf("%s declares no license and has no license file.", s.name))
+	}
+	if s.err != nil {
+		return errStyle.Render("Could not load the license: " + s.err.Error())
+	}
+	w := s.env.bodyWidth()
+	s.view.Width, s.view.Height = w, s.env.bodyHeight()
+	if s.width != w {
+		s.width = w
+		s.view.SetContent(lipgloss.NewStyle().Width(w).Render(s.text))
+	}
+	return s.view.View()
+}

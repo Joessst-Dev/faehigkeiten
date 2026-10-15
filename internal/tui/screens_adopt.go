@@ -225,7 +225,7 @@ func (s *adoptScreen) Update(msg tea.Msg) tea.Cmd {
 		s.co = msg.co
 		items := make([]pickItem, 0, len(msg.skills))
 		for _, sk := range msg.skills {
-			items = append(items, pickItem{Title: sk.Name, Desc: sk.Path + " • " + sk.Description, Badge: versionBadge(sk.Version), Value: sk})
+			items = append(items, pickItem{Title: sk.Name, Desc: withLicense(sk.Path+" • "+sk.Description, sk.License.Label()), Badge: versionBadge(sk.Version), Value: sk})
 		}
 		s.list = newPickList(items, false)
 		s.list.emptyMsg = "no SKILL.md found in this repository"

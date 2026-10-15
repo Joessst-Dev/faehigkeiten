@@ -81,6 +81,7 @@ type Entry struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Version     string `json:"version,omitempty"`
+	License     string `json:"license,omitempty"`
 	Path        string `json:"path"`
 	Repo        Repo   `json:"repo"`
 }
@@ -209,7 +210,7 @@ func Scan(ctx context.Context, f Fetcher, r Repo, refresh bool) ([]Entry, error)
 	}
 	entries := make([]Entry, 0, len(skills))
 	for _, s := range skills {
-		entries = append(entries, Entry{Name: s.Name, Description: s.Description, Version: s.Version, Path: s.Path, Repo: r})
+		entries = append(entries, Entry{Name: s.Name, Description: s.Description, Version: s.Version, License: s.License.Label(), Path: s.Path, Repo: r})
 	}
 	return entries, nil
 }
@@ -337,7 +338,7 @@ func (idx *Index) Search(query string) []Entry {
 	var hits []scored
 	for _, e := range idx.Entries {
 		name := strings.ToLower(e.Name)
-		hay := name + "\n" + strings.ToLower(e.Description) + "\n" + strings.ToLower(e.Repo.Name)
+		hay := name + "\n" + strings.ToLower(e.Description) + "\n" + strings.ToLower(e.Repo.Name) + "\n" + strings.ToLower(e.License)
 		score, ok := 0, true
 		for _, t := range terms {
 			switch {

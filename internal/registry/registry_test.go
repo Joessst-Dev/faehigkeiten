@@ -125,6 +125,14 @@ var _ = Describe("Index", func() {
 		Expect(idx.Search("")).To(HaveLen(3))
 	})
 
+	It("records and searches licenses", func() {
+		Expect(os.WriteFile(filepath.Join(f["https://x/a"], "LICENSE"), []byte("Apache License\nVersion 2.0"), 0o644)).To(Succeed())
+		idx := registry.Build(context.Background(), f, repos, false, nil)
+		hits := idx.Search("apache")
+		Expect(hits).To(HaveLen(2))
+		Expect(hits[0].License).To(Equal("Apache-2.0"))
+	})
+
 	It("caches the index with a TTL", func() {
 		p := registry.IndexPath(GinkgoT().TempDir())
 		idx := registry.Build(context.Background(), f, repos, false, nil)
