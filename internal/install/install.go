@@ -229,10 +229,9 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 		Commit:      req.Checkout.Commit,
 		Tracking:    req.Tracking,
 		Pinned:      req.Pinned,
-		License:     req.Skill.License.ID,
-		LicenseFile: req.Skill.License.File,
 		InstalledAt: in.now(),
 	}
+	SetLicense(&entry, req.Skill.License)
 	for _, a := range req.Agents {
 		entry.Agents = append(entry.Agents, a.ID)
 	}
@@ -324,6 +323,11 @@ func (in *Installer) entryDirs(e lock.Entry) ([]string, error) {
 // License returns the license recorded for an entry.
 func License(e lock.Entry) skill.License {
 	return skill.License{ID: e.License, File: e.LicenseFile}
+}
+
+// SetLicense records license l in an entry.
+func SetLicense(e *lock.Entry, l skill.License) {
+	e.License, e.LicenseFile, e.NoLicense = l.ID, l.File, l == (skill.License{})
 }
 
 // InstalledDir returns the first installed copy of an entry's skill.
@@ -436,13 +440,24 @@ type Found struct {
 	Name        string
 	Description string
 	Version     string
-	// License is resolved from the skill directory alone; the repository
-	// it came from is unknown.
-	License skill.License
 	// Agents lists the IDs of agents whose directory contains the skill.
 	Agents []string
 	// Dirs are the skill directories on disk.
 	Dirs []string
+}
+
+// License resolves the license of an unmanaged skill from its first
+// directory alone; the repository it came from is unknown. It reads the
+// directory each time, so callers only ask for skills they show.
+func (f Found) License() skill.License {
+	if len(f.Dirs) == 0 {
+		return skill.License{}
+	}
+	s, err := skill.LoadDir(f.Dirs[0], f.Dirs[0])
+	if err != nil {
+		return skill.License{}
+	}
+	return s.License
 }
 
 // Unmanaged scans the skill directories of all known agents for the target and
@@ -483,9 +498,7 @@ func (in *Installer) Unmanaged() []Found {
 			}
 			f, ok := byName[de.Name()]
 			if !ok {
-				s.Dir = dir
-				s.ResolveLicense(dir)
-				f = &Found{Name: de.Name(), Description: s.Description, Version: s.Version, License: s.License}
+				f = &Found{Name: de.Name(), Description: s.Description, Version: s.Version}
 				byName[de.Name()] = f
 				names = append(names, de.Name())
 			}
@@ -588,7 +601,7 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 	}
 	entry := lock.Entry{Name: f.Name, Agents: f.Agents, Tracking: lock.TrackNone, InstalledAt: in.now()}
 	// Local-only skills have no path; their directory is their root.
-	entry.License, entry.LicenseFile = f.License.ID, f.License.File
+	SetLicense(&entry, f.License())
 	if req.Checkout == nil || req.Upstream == nil {
 		if req.Tracking != "" && req.Tracking != lock.TrackNone {
 			return lock.Entry{}, fmt.Errorf("local-only skill %s cannot be tracked for updates", f.Name)
@@ -607,7 +620,7 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 	}
 	entry.Source = req.Checkout.URL
 	entry.Path = req.Upstream.Path
-	entry.License, entry.LicenseFile = req.Upstream.License.ID, req.Upstream.License.File
+	SetLicense(&entry, req.Upstream.License)
 	entry.Ref = req.Checkout.Ref
 	if local == upstream {
 		// Only claim a commit when the local copy matches it exactly.

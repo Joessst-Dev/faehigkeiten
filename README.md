@@ -167,7 +167,8 @@ recognised and shown by their SPDX identifier; other license files are shown as 
 one the field names is ignored.
 Lists show the license in a `LICENSE` column (CLI) or next to the description (TUI); `fgk license`
 and <kbd>l</kbd> in the TUI print the full text. The license is recorded in the lockfile at install
-time.
+time (`no_license: true` for skills without one). Searching for a license name such as `mit` or
+`apache` also finds the skills under that license.
 
 ## Configuration
 

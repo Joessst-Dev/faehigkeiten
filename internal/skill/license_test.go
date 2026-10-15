@@ -43,7 +43,7 @@ var _ = Describe("Identify", func() {
 	)
 })
 
-var _ = Describe("DetectLicense", func() {
+var _ = Describe("license detection", func() {
 	var root, dir string
 
 	BeforeEach(func() {
@@ -94,10 +94,27 @@ var _ = Describe("DetectLicense", func() {
 		Expect(resolve()).To(Equal(skill.License{ID: "MIT", File: "skills/pdf/LICENSE-MIT"}))
 	})
 
-	It("keeps SPDX expressions", func() {
-		Expect(testutil.WriteFiles(root, map[string]string{"skills/pdf/SKILL.md": skillMD("(MIT OR Apache-2.0)")})).To(Succeed())
-		Expect(resolve().ID).To(Equal("(MIT OR Apache-2.0)"))
-	})
+	DescribeTable("reads SPDX expressions",
+		func(field, id string) {
+			Expect(testutil.WriteFiles(root, map[string]string{"skills/pdf/SKILL.md": skillMD(field)})).To(Succeed())
+			Expect(resolve().ID).To(Equal(id))
+		},
+		Entry("in parentheses", "(MIT OR Apache-2.0)", "(MIT OR Apache-2.0)"),
+		Entry("with lower-case operators", "mit or apache-2.0", "MIT OR Apache-2.0"),
+		Entry("with an exception", "GPL-2.0-only WITH Classpath-exception-2.0", "GPL-2.0-only WITH Classpath-exception-2.0"),
+	)
+
+	DescribeTable("keeps fields that are no expression as written",
+		func(field string) {
+			Expect(testutil.WriteFiles(root, map[string]string{
+				"skills/pdf/SKILL.md": skillMD(field),
+				"LICENSE":             apacheText,
+			})).To(Succeed())
+			Expect(resolve().ID).To(Equal("Apache-2.0"), "the license file decides")
+		},
+		Entry("ending in an operator", "MIT OR"),
+		Entry("with words as operands", "MIT or later"),
+	)
 
 	It("identifies the file a frontmatter sentence points to", func() {
 		Expect(testutil.WriteFiles(root, map[string]string{

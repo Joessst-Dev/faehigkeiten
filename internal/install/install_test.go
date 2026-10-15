@@ -307,8 +307,8 @@ var _ = Describe("Installer", func() {
 				filepath.Join(project, ".agents", "skills", "manual"),
 			))
 			Expect(manual.Version).To(Equal("0.1.0"))
-			Expect(manual.License.Label()).To(BeEmpty())
-			Expect(found[1].License).To(Equal(skill.License{ID: "GPL-3.0", File: "LICENSE"}))
+			Expect(manual.License().Label()).To(BeEmpty())
+			Expect(found[1].License()).To(Equal(skill.License{ID: "GPL-3.0", File: "LICENSE"}))
 
 			By("leaving copies of managed skills out of the adoptable ones")
 			var adoptable []string

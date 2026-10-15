@@ -58,6 +58,17 @@ func IsLicenseFile(name string) bool {
 	return false
 }
 
+// LoadDir reads the skill in dir and resolves its license against root.
+func LoadDir(dir, root string) (Skill, error) {
+	s, err := ParseFile(filepath.Join(dir, FileName))
+	if err != nil {
+		return Skill{}, err
+	}
+	s.Dir = dir
+	s.ResolveLicense(root)
+	return s, nil
+}
+
 // ResolveLicense determines the license of the skill in s.Dir: the license
 // field of its frontmatter, a license file in the skill directory, or one in
 // root (the repository the skill was found in).
@@ -67,15 +78,6 @@ func (s *Skill) ResolveLicense(root string) {
 
 func (s *Skill) resolveLicense(root string, lf licenseFinder) {
 	s.License = lf.detect(s.Dir, root, s.License.ID)
-}
-
-// DetectLicense determines a license from the frontmatter license field fm
-// and the license files in dir and root. A field naming a license wins, with
-// the first license file that does not contradict it; otherwise the first
-// license file found is identified, so fields like "Complete terms in
-// LICENSE.txt" resolve to the license of that file.
-func DetectLicense(dir, root, fm string) License {
-	return licenseFinder{}.detect(dir, root, fm)
 }
 
 // foundLicense is a license file and the license identified in it.
@@ -106,6 +108,11 @@ func identifyFile(file string) foundLicense {
 	return f
 }
 
+// detect determines a license from the frontmatter license field fm
+// and the license files in dir and root. A field naming a license wins, with
+// the first license file that does not contradict it; otherwise the first
+// license file found is identified, so fields like "Complete terms in
+// LICENSE.txt" resolve to the license of that file.
 func (lf licenseFinder) detect(dir, root, fm string) License {
 	fm = strings.TrimSpace(Clean(fm))
 	if root == "" {
@@ -267,14 +274,58 @@ func spdxID(fm string) (string, bool) {
 		return id, true
 	}
 	// Single identifiers or SPDX expressions such as "MIT OR Apache-2.0":
-	// identifiers alternating with operators.
-	for i, f := range strings.Fields(strings.NewReplacer("(", " ", ")", " ").Replace(fm)) {
-		op := f == "OR" || f == "AND" || f == "WITH"
-		if i%2 == 1 && !op || i%2 == 0 && (op || !spdxLike.MatchString(f)) {
+	// identifiers alternating with operators, starting and ending with an
+	// identifier.
+	fields := strings.Fields(strings.NewReplacer("(", " ( ", ")", " ) ").Replace(fm))
+	var out []string
+	n := 0 // identifiers and operators, without parentheses
+	for _, f := range fields {
+		if f == "(" || f == ")" {
+			out = append(out, f)
+			continue
+		}
+		op := strings.ToUpper(f)
+		isOp := op == "OR" || op == "AND" || op == "WITH"
+		if n%2 == 1 != isOp {
 			return "", false
 		}
+		n++
+		switch {
+		case isOp:
+			out = append(out, op)
+		case !spdxLike.MatchString(f):
+			return "", false
+		default:
+			out = append(out, canonicalID(f))
+		}
 	}
-	return fm, true
+	if n%2 == 0 {
+		return "", false
+	}
+	if n > 1 {
+		// Words such as "MIT or later" are not an expression: every operand
+		// must look like a license identifier.
+		for i := 0; i < len(out); i++ {
+			if f := out[i]; f != "(" && f != ")" && f != "OR" && f != "AND" && f != "WITH" && !idLike(f) {
+				return "", false
+			}
+		}
+	}
+	return strings.NewReplacer("( ", "(", " )", ")").Replace(strings.Join(out, " ")), true
+}
+
+func canonicalID(f string) string {
+	if id, ok := knownIDs[strings.ToLower(f)]; ok {
+		return id
+	}
+	return f
+}
+
+// idLike reports whether f looks like an SPDX identifier: a known one, a
+// LicenseRef or exception, or a name with a version.
+func idLike(f string) bool {
+	_, known := knownIDs[strings.ToLower(f)]
+	return known || strings.HasPrefix(f, "LicenseRef-") || strings.ContainsAny(f, "0123456789")
 }
 
 type licenseRule struct {

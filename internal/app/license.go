@@ -13,7 +13,6 @@ import (
 	"github.com/Joessst-Dev/faehigkeiten/internal/install"
 	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
-	"github.com/Joessst-Dev/faehigkeiten/internal/source"
 )
 
 // ErrNoLicense is returned when a skill declares no license and has no
@@ -37,7 +36,7 @@ func FoundLicenseText(f install.Found) (string, error) {
 	if len(f.Dirs) == 0 {
 		return "", fmt.Errorf("skill %s has no directories", f.Name)
 	}
-	return LicenseText(f.Dirs[0], f.License)
+	return LicenseText(f.Dirs[0], f.License())
 }
 
 // SkillLicenseText returns the license text of the skill named name (its
@@ -65,35 +64,43 @@ func (a *App) SkillLicenseText(ctx context.Context, src, ref, name string) (stri
 
 // EntryLicenseText returns the license text of an installed skill. License
 // files inside the skill are read from the installed copy; others, such as a
-// repository's root license, from the cached source.
+// repository's root license, from the source at the installed commit.
 func (a *App) EntryLicenseText(ctx context.Context, in *install.Installer, e lock.Entry) (string, error) {
+	if e.NoLicense {
+		return "", ErrNoLicense
+	}
 	dir, err := in.InstalledDir(e)
 	if err != nil {
 		return "", err
 	}
 	l := install.License(e)
-	if l == (skill.License{}) {
-		// Recorded without a license, e.g. by an older version: look at the
-		// installed copy, then at the repository it came from.
-		s, err := skill.ParseFile(filepath.Join(dir, skill.FileName))
+	switch {
+	case l == (skill.License{}):
+		// Recorded by an older version: look at the installed copy, then at
+		// the source it came from.
+		s, err := skill.LoadDir(dir, dir)
 		if err != nil {
 			return "", err
 		}
-		s.Dir = dir
-		s.ResolveLicense(dir)
 		if s.License.Label() != "" || e.Source == "" {
 			return LicenseText(dir, s.License)
 		}
-		return a.sourceLicenseText(ctx, e, nil)
-	}
-	if l.File == "" || e.Source == "" && !inSkill(e.Path, l.File) {
+		return a.resolveSourceLicense(ctx, e)
+	case l.File == "":
+		return LicenseText(dir, l)
+	case inSkill(e.Path, l.File):
+		rel, _ := strings.CutPrefix(l.File, path.Clean(e.Path)+"/")
+		text, err := LicenseText(dir, skill.License{File: rel})
+		if errors.Is(err, fs.ErrNotExist) && e.Source != "" {
+			// Deleted from the installed copy, or adopted from a source with
+			// different content.
+			return a.sourceLicenseFile(ctx, e, l.File)
+		}
+		return text, err
+	case e.Source == "":
 		return LicenseText(dir, skill.License{ID: l.ID})
 	}
-	if inSkill(e.Path, l.File) {
-		rel, _ := strings.CutPrefix(l.File, path.Clean(e.Path)+"/")
-		return LicenseText(dir, skill.License{File: rel})
-	}
-	return a.sourceLicenseText(ctx, e, &l)
+	return a.sourceLicenseFile(ctx, e, l.File)
 }
 
 func inSkill(skillPath, file string) bool {
@@ -101,41 +108,46 @@ func inSkill(skillPath, file string) bool {
 	return p == "." || strings.HasPrefix(file, p+"/")
 }
 
-// sourceLicenseText reads license l from the source of e, or resolves the
-// license of the skill there when l is nil. It prefers the installed commit
-// and falls back to the latest cached checkout when that commit cannot be
-// fetched or lacks the file.
-func (a *App) sourceLicenseText(ctx context.Context, e lock.Entry, l *skill.License) (string, error) {
-	read := func(co *source.Checkout) (string, error) {
-		if l != nil {
-			return LicenseText(co.Dir, *l)
-		}
-		dir, err := co.SkillDir(e.Path)
-		if err != nil {
-			return "", err
-		}
-		s, err := skill.ParseFile(filepath.Join(dir, skill.FileName))
-		if err != nil {
-			return "", err
-		}
-		s.Dir = dir
-		s.ResolveLicense(co.Dir)
-		return LicenseText(co.Dir, s.License)
-	}
-	var firstErr error
+// sourceLicenseFile reads the recorded license file of e from its source at
+// the installed commit. When that commit cannot be fetched, e.g. because the
+// history was rewritten or is not cached offline, it reads the file from the
+// latest cached checkout instead: the file is the one recorded at install.
+func (a *App) sourceLicenseFile(ctx context.Context, e lock.Entry, file string) (string, error) {
+	l := skill.License{File: file}
+	var commitErr error
 	if e.Commit != "" {
 		co, err := a.Sources.FetchCommit(ctx, e.Source, e.Ref, e.Commit, e.Path)
 		if err == nil {
-			text, err := read(co)
-			if err == nil || !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, ErrNoLicense) {
-				return text, err
-			}
+			return LicenseText(co.Dir, l)
 		}
-		firstErr = err
+		commitErr = err
 	}
 	co, err := a.Sources.Fetch(ctx, e.Source, e.Ref, false)
 	if err != nil {
-		return "", errors.Join(firstErr, err)
+		return "", errors.Join(commitErr, err)
 	}
-	return read(co)
+	return LicenseText(co.Dir, l)
+}
+
+// resolveSourceLicense resolves the license of e, recorded without one, from
+// its source at the installed commit. Unlike sourceLicenseFile it does not
+// fall back to a later commit, whose license may differ from the installed
+// one; only skills installed without a known commit use the latest checkout.
+func (a *App) resolveSourceLicense(ctx context.Context, e lock.Entry) (string, error) {
+	if e.Commit != "" {
+		co, s, err := a.LoadCommit(ctx, e.Source, e.Ref, e.Path, e.Commit)
+		if err != nil {
+			return "", err
+		}
+		return LicenseText(co.Dir, s.License)
+	}
+	co, skills, err := a.Load(ctx, e.Source, e.Ref, false)
+	if err != nil {
+		return "", err
+	}
+	i := slices.IndexFunc(skills, func(s skill.Skill) bool { return s.Path == e.Path })
+	if i < 0 {
+		return "", fmt.Errorf("skill %s no longer found at %s", e.Name, e.Path)
+	}
+	return LicenseText(co.Dir, skills[i].License)
 }

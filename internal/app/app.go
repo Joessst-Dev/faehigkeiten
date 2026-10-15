@@ -180,12 +180,11 @@ func (a *App) LoadCommit(ctx context.Context, src, ref, path, commit string) (*s
 	if err != nil {
 		return nil, skill.Skill{}, err
 	}
-	s, err := skill.ParseFile(filepath.Join(dir, skill.FileName))
+	s, err := skill.LoadDir(dir, co.Dir)
 	if err != nil {
 		return nil, skill.Skill{}, fmt.Errorf("skill %s at %s: %w", path, commit, err)
 	}
-	s.Dir, s.Path = dir, path
-	s.ResolveLicense(co.Dir)
+	s.Path = path
 	return co, s, nil
 }
 

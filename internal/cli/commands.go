@@ -271,7 +271,7 @@ func newListCommand() *cobra.Command {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Name, install.Describe(e), licenseColumn(install.License(e).Label()), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
 			}
 			for _, f := range found {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", f.Name, "not managed", licenseColumn(f.License.Label()), strings.Join(f.Agents, ","), "-")
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", f.Name, "not managed", licenseColumn(f.License().Label()), strings.Join(f.Agents, ","), "-")
 			}
 			return tw.Flush()
 		},

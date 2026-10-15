@@ -63,8 +63,11 @@ type Entry struct {
 	Pinned bool `yaml:"pinned,omitempty"`
 	// License is the ID of the skill's license and LicenseFile its license
 	// file relative to the source root (see skill.License).
-	License     string    `yaml:"license,omitempty"`
-	LicenseFile string    `yaml:"license_file,omitempty"`
+	License     string `yaml:"license,omitempty"`
+	LicenseFile string `yaml:"license_file,omitempty"`
+	// NoLicense records that the skill has no license, unlike entries
+	// written before licenses were recorded.
+	NoLicense   bool      `yaml:"no_license,omitempty"`
 	InstalledAt time.Time `yaml:"installed_at"`
 }
 

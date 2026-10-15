@@ -76,22 +76,30 @@ func (m *Manager) FetchCommit(ctx context.Context, src, ref, commit, skillPath s
 	if !plumbing.IsHash(commit) {
 		return nil, fmt.Errorf("invalid commit %q", commit)
 	}
-	// Trees cached under the old key lack the repository's license files.
 	dir := m.cachePath(src, commit+":"+skillPath+":licenses")
-	if !IsLocal(src) && ref != "" {
+	// Trees cached under the old key lack the repository's license files.
+	// They are replaced, but still used when the history is unavailable.
+	legacy := m.cachePath(src, commit+":"+skillPath)
+	remote := !IsLocal(src) && ref != ""
+	if remote {
 		// Cached trees need no history; only the ref has to be known.
 		if _, err := os.Stat(dir); err == nil {
+			os.RemoveAll(legacy)
 			return &Checkout{URL: src, Ref: ref, Commit: commit, Dir: dir}, nil
 		}
 	}
 	h, unlock, err := m.history(ctx, src, ref, false, true)
 	if err != nil {
+		if _, statErr := os.Stat(legacy); remote && statErr == nil {
+			return &Checkout{URL: src, Ref: ref, Commit: commit, Dir: legacy}, nil
+		}
 		return nil, err
 	}
 	// unlock is replaced when the history is refreshed below.
 	defer func() { unlock() }()
 	co := &Checkout{URL: src, Ref: h.ref, Commit: commit, Dir: filepath.Join(dir, filepath.FromSlash(h.prefix))}
 	if _, err := os.Stat(dir); err == nil {
+		os.RemoveAll(legacy)
 		return co, nil
 	}
 	c, err := h.repo.CommitObject(plumbing.NewHash(commit))
@@ -111,6 +119,7 @@ func (m *Manager) FetchCommit(ctx context.Context, src, ref, commit, skillPath s
 	if err := writeTree(c, path.Join(h.prefix, skillPath), h.prefix, dir); err != nil {
 		return nil, err
 	}
+	os.RemoveAll(legacy)
 	return co, nil
 }
 

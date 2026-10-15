@@ -121,6 +121,32 @@ var _ = Describe("Versions", func() {
 			Expect(filepath.Join(co.Dir, "README.md")).NotTo(BeAnExistingFile())
 		})
 
+		Describe("trees cached by older versions", func() {
+			var url, legacy string
+
+			BeforeEach(func() {
+				var err error
+				url, err = source.Normalize(testutil.FileURL(origin))
+				Expect(err).NotTo(HaveOccurred())
+				legacy = m.CachePath(url, commits["fix"]+":skills/a")
+				Expect(testutil.WriteFiles(legacy, map[string]string{"skills/a/SKILL.md": "old tree"})).To(Succeed())
+			})
+
+			It("replaces them", func() {
+				co, err := m.FetchCommit(ctx, url, "master", commits["fix"], "skills/a")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(co.Dir).NotTo(Equal(legacy))
+				Expect(legacy).NotTo(BeAnExistingFile())
+			})
+
+			It("uses them when the history is unavailable", func() {
+				Expect(os.RemoveAll(origin)).To(Succeed())
+				co, err := m.FetchCommit(ctx, url, "master", commits["fix"], "skills/a")
+				Expect(err).NotTo(HaveOccurred())
+				Expect(co.Dir).To(Equal(legacy))
+			})
+		})
+
 		It("fetches commits newer than the cached history", func() {
 			url := testutil.FileURL(origin)
 			_, err := m.FetchCommit(ctx, url, "", commits["1.0.0"], "skills/a")

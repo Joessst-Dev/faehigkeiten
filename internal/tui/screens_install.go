@@ -452,7 +452,7 @@ func (s *installedScreen) reload() {
 		if f.Description != "" {
 			desc += " • " + f.Description
 		}
-		desc = withLicense(desc, f.License.Label())
+		desc = withLicense(desc, f.License().Label())
 		it := pickItem{Title: f.Name, Badge: "not managed", Desc: desc, Checked: checked[f.Name], Value: f}
 		if _, managed := in.Lock.Get(f.Name); managed {
 			// Another copy of a managed skill: removable, but not adoptable.

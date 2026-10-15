@@ -86,8 +86,15 @@ type Entry struct {
 	Repo        Repo   `json:"repo"`
 }
 
+// IndexFormat is the version of the index cache. Caches of an older format
+// lack fields of their entries, such as licenses, and are rebuilt.
+const IndexFormat = 1
+
 // Index is a searchable list of skills across repositories.
 type Index struct {
+	// Format is the IndexFormat the index was built with; 0 for caches
+	// written before formats were recorded.
+	Format  int               `json:"format,omitempty"`
 	BuiltAt time.Time         `json:"built_at"`
 	Entries []Entry           `json:"entries"`
 	Errors  map[string]string `json:"errors,omitempty"`
@@ -146,7 +153,7 @@ func (idx *Index) finishLegacy(repos []Repo) {
 
 // NewIndex returns an empty index.
 func NewIndex() *Index {
-	return &Index{BuiltAt: time.Now().UTC(), Errors: map[string]string{}, Scanned: map[string]time.Time{}}
+	return &Index{Format: IndexFormat, BuiltAt: time.Now().UTC(), Errors: map[string]string{}, Scanned: map[string]time.Time{}}
 }
 
 // Fetcher makes a source available on disk.
@@ -238,7 +245,7 @@ func (idx *Index) merge(r Repo, entries []Entry, err error) {
 
 // Clone returns a deep copy of idx.
 func (idx *Index) Clone() *Index {
-	out := &Index{BuiltAt: idx.BuiltAt, Entries: slices.Clone(idx.Entries), Errors: maps.Clone(idx.Errors), Scanned: maps.Clone(idx.Scanned)}
+	out := &Index{Format: idx.Format, BuiltAt: idx.BuiltAt, Entries: slices.Clone(idx.Entries), Errors: maps.Clone(idx.Errors), Scanned: maps.Clone(idx.Scanned)}
 	if out.Errors == nil {
 		out.Errors = map[string]string{}
 	}
@@ -338,7 +345,7 @@ func (idx *Index) Search(query string) []Entry {
 	var hits []scored
 	for _, e := range idx.Entries {
 		name := strings.ToLower(e.Name)
-		hay := name + "\n" + strings.ToLower(e.Description) + "\n" + strings.ToLower(e.Repo.Name) + "\n" + strings.ToLower(e.License)
+		hay := name + "\n" + strings.ToLower(e.Description) + "\n" + strings.ToLower(e.Repo.Name)
 		score, ok := 0, true
 		for _, t := range terms {
 			switch {
@@ -348,7 +355,7 @@ func (idx *Index) Search(query string) []Entry {
 				score += 50
 			case strings.Contains(name, t):
 				score += 20
-			case strings.Contains(hay, t):
+			case strings.Contains(hay, t), licenseMatches(e.License, t):
 				score++
 			default:
 				ok = false
@@ -364,6 +371,14 @@ func (idx *Index) Search(query string) []Entry {
 		out[i] = h.e
 	}
 	return out
+}
+
+// licenseMatches reports whether the search term t names license: the whole
+// label, or its family without the version ("apache" for Apache-2.0, but
+// not "gpl" for LGPL-3.0).
+func licenseMatches(license, t string) bool {
+	l := strings.ToLower(license)
+	return l != "" && (l == t || strings.HasPrefix(l, t+"-"))
 }
 
 // DefaultTTL is how long a cached index is considered fresh.
@@ -399,6 +414,10 @@ func LoadIndexAny(p string, ttl time.Duration) (idx *Index, fresh bool, err erro
 		for _, e := range idx.Entries {
 			idx.Scanned[e.Repo.key()] = idx.BuiltAt
 		}
+	}
+	if idx.Format < IndexFormat {
+		// Served as is until the rebuild this triggers replaces it.
+		idx.Format, idx.BuiltAt = IndexFormat, time.Time{}
 	}
 	return idx, ttl <= 0 || time.Since(idx.BuiltAt) <= ttl, nil
 }

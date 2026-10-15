@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/Masterminds/semver/v3"
@@ -111,13 +110,12 @@ func compare(st *Status, co *source.Checkout) {
 		st.Err = fmt.Errorf("skill %s: %w", e.Name, err)
 		return
 	}
-	s, err := skill.ParseFile(filepath.Join(dir, skill.FileName))
+	s, err := skill.LoadDir(dir, co.Dir)
 	if err != nil {
 		st.Err = fmt.Errorf("skill %s no longer found at %s: %w", e.Name, e.Path, err)
 		return
 	}
-	s.Dir, s.Path = dir, e.Path
-	s.ResolveLicense(co.Dir)
+	s.Path = e.Path
 	st.skill = s
 
 	switch e.Tracking {

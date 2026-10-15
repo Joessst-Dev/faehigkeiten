@@ -131,6 +131,8 @@ var _ = Describe("Index", func() {
 		hits := idx.Search("apache")
 		Expect(hits).To(HaveLen(2))
 		Expect(hits[0].License).To(Equal("Apache-2.0"))
+		Expect(idx.Search("apache-2.0")).To(HaveLen(2))
+		Expect(idx.Search("ache")).To(BeEmpty(), "licenses match by name, not substring")
 	})
 
 	It("caches the index with a TTL", func() {
@@ -291,7 +293,7 @@ var _ = Describe("Indexer", func() {
 		pinned := registry.Repo{Name: "c", URL: "https://x/c", Ref: "v1"}
 		repos = append(repos, pinned)
 		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}}],"errors":{"https://x/c":"boom"}}`
+		old := `{"format":1,"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}}],"errors":{"https://x/c":"boom"}}`
 		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
 
 		idx, err := x.Wait(context.Background(), false, nil)
@@ -310,7 +312,7 @@ var _ = Describe("Indexer", func() {
 	It("re-indexes a repository whose ref changed since an old cache was built", func() {
 		repos[0].Ref = "v2"
 		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}},{"name":"docx","path":"docx","repo":{"name":"b","url":"https://x/b"}}]}`
+		old := `{"format":1,"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}},{"name":"docx","path":"docx","repo":{"name":"b","url":"https://x/b"}}]}`
 		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
 
 		idx, err := x.Wait(context.Background(), false, nil)
@@ -321,7 +323,7 @@ var _ = Describe("Indexer", func() {
 
 	It("saves a converted old cache in the background", func() {
 		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
-		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}},{"name":"docx","path":"docx","repo":{"name":"b","url":"https://x/b"}}]}`
+		old := `{"format":1,"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}},{"name":"docx","path":"docx","repo":{"name":"b","url":"https://x/b"}}]}`
 		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
 
 		done := x.Start(context.Background(), false, nil)
@@ -333,6 +335,21 @@ var _ = Describe("Indexer", func() {
 		data, err := os.ReadFile(x.Path)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(data)).To(ContainSubstring(`"scanned"`))
+	})
+
+	It("serves a cache of an older format and rebuilds it", func() {
+		built := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+		old := `{"built_at":"` + built + `","entries":[{"name":"pdf","path":"pdf","repo":{"name":"a","url":"https://x/a"}}],"scanned":{"https://x/a":"` + built + `","https://x/b":"` + built + `"}}`
+		Expect(os.WriteFile(x.Path, []byte(old), 0o644)).To(Succeed())
+		cached, fresh, err := registry.LoadIndexAny(x.Path, time.Hour)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(fresh).To(BeFalse())
+		Expect(cached.Entries).To(HaveLen(1), "still served while it is rebuilt")
+
+		idx, err := x.Wait(context.Background(), false, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.count()).To(Equal(map[string]int{"https://x/a": 1, "https://x/b": 1}))
+		Expect(idx.Format).To(Equal(registry.IndexFormat))
 	})
 
 	It("serves requests made during a build before completing it", func() {
