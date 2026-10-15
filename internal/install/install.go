@@ -229,7 +229,7 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 		Commit:      req.Checkout.Commit,
 		Tracking:    req.Tracking,
 		Pinned:      req.Pinned,
-		License:     req.Skill.License.Label(),
+		License:     req.Skill.License.ID,
 		LicenseFile: req.Skill.License.File,
 		InstalledAt: in.now(),
 	}
@@ -319,6 +319,11 @@ func (in *Installer) entryDirs(e lock.Entry) ([]string, error) {
 		}
 	}
 	return dirs, nil
+}
+
+// License returns the license recorded for an entry.
+func License(e lock.Entry) skill.License {
+	return skill.License{ID: e.License, File: e.LicenseFile}
 }
 
 // InstalledDir returns the first installed copy of an entry's skill.
@@ -583,7 +588,7 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 	}
 	entry := lock.Entry{Name: f.Name, Agents: f.Agents, Tracking: lock.TrackNone, InstalledAt: in.now()}
 	// Local-only skills have no path; their directory is their root.
-	entry.License, entry.LicenseFile = f.License.Label(), f.License.File
+	entry.License, entry.LicenseFile = f.License.ID, f.License.File
 	if req.Checkout == nil || req.Upstream == nil {
 		if req.Tracking != "" && req.Tracking != lock.TrackNone {
 			return lock.Entry{}, fmt.Errorf("local-only skill %s cannot be tracked for updates", f.Name)
@@ -602,7 +607,7 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 	}
 	entry.Source = req.Checkout.URL
 	entry.Path = req.Upstream.Path
-	entry.License, entry.LicenseFile = req.Upstream.License.Label(), req.Upstream.License.File
+	entry.License, entry.LicenseFile = req.Upstream.License.ID, req.Upstream.License.File
 	entry.Ref = req.Checkout.Ref
 	if local == upstream {
 		// Only claim a commit when the local copy matches it exactly.

@@ -268,7 +268,7 @@ func newListCommand() *cobra.Command {
 			tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 			fmt.Fprintln(tw, "NAME\tTRACKING\tLICENSE\tAGENTS\tSOURCE")
 			for _, e := range in.Lock.Skills {
-				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Name, install.Describe(e), licenseColumn(e.License), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Name, install.Describe(e), licenseColumn(install.License(e).Label()), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
 			}
 			for _, f := range found {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", f.Name, "not managed", licenseColumn(f.License.Label()), strings.Join(f.Agents, ","), "-")
@@ -302,16 +302,8 @@ SKILL.md.`,
 			}
 			var text string
 			if len(args) == 2 {
-				co, skills, err := a.Load(cmd.Context(), args[0], ref, false)
-				if err != nil {
+				if text, err = a.SkillLicenseText(cmd.Context(), args[0], ref, args[1]); err != nil {
 					return err
-				}
-				selected, err := app.Select(skills, args[1:])
-				if err != nil {
-					return err
-				}
-				if text, err = app.LicenseText(co.Dir, selected[0].License); err != nil {
-					return fmt.Errorf("%s: %w", selected[0].Name, err)
 				}
 			} else {
 				if ref != "" {

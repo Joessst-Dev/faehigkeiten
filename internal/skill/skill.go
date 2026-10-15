@@ -160,6 +160,7 @@ func Discover(root string) ([]Skill, error) {
 		return nil, err
 	}
 	var skills []Skill
+	licenses := licenseFinder{}
 	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -191,7 +192,7 @@ func Discover(root string) ([]Skill, error) {
 		}
 		s.Dir = dir
 		s.Path = filepath.ToSlash(rel)
-		s.ResolveLicense(root)
+		s.resolveLicense(root, licenses)
 		skills = append(skills, s)
 		if dir != root {
 			return filepath.SkipDir

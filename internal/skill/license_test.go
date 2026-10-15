@@ -15,6 +15,13 @@ import (
 const (
 	mitText    = "MIT License\n\nCopyright (c) 2026 me\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\n...\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n"
 	apacheText = "                                 Apache License\n                           Version 2.0, January 2004\n"
+	// gpl3Text has the passages of the GPL that name the AGPL and LGPL.
+	gpl3Text = "                    GNU GENERAL PUBLIC LICENSE\n                       Version 3, 29 June 2007\n\n" +
+		" Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>\n\n                            Preamble\n\n" +
+		"  13. Use with the GNU Affero General Public License.\n\n  Notwithstanding any other provision of this License, you have\n" +
+		"permission to link or combine any covered work with a work licensed\nunder version 3 of the GNU Affero General Public License ...\n\n" +
+		"consider it more useful to permit linking proprietary applications with\nthe library.  If this is what you want to do, use the GNU Lesser General\n" +
+		"Public License instead of this License.  But first, please read\n<https://www.gnu.org/licenses/why-not-lgpl.html>.\n"
 )
 
 func skillMD(license string) string {
@@ -27,6 +34,8 @@ var _ = Describe("Identify", func() {
 		Entry("MIT", mitText, "MIT"),
 		Entry("Apache", apacheText, "Apache-2.0"),
 		Entry("GPL-3.0", "GNU GENERAL PUBLIC LICENSE\n Version 3, 29 June 2007", "GPL-3.0"),
+		Entry("GPL-3.0 mentioning the AGPL and LGPL", gpl3Text, "GPL-3.0"),
+		Entry("LGPL-3.0", "GNU LESSER GENERAL PUBLIC LICENSE\nVersion 3, 29 June 2007\n... the GNU General Public License ...", "LGPL-3.0"),
 		Entry("AGPL-3.0", "GNU AFFERO GENERAL PUBLIC LICENSE\nVersion 3, 19 November 2007", "AGPL-3.0"),
 		Entry("BSD-3-Clause", "Redistribution and use in source and binary forms ... Neither the name of", "BSD-3-Clause"),
 		Entry("BSD-2-Clause", "Redistribution and use in source and binary forms, with or without", "BSD-2-Clause"),
@@ -49,9 +58,40 @@ var _ = Describe("DetectLicense", func() {
 		return skills[0].License
 	}
 
-	It("prefers an SPDX identifier in the frontmatter", func() {
-		Expect(testutil.WriteFiles(root, map[string]string{"skills/pdf/SKILL.md": skillMD("mit"), "LICENSE": apacheText})).To(Succeed())
+	It("prefers an SPDX identifier in the frontmatter and its license file", func() {
+		Expect(testutil.WriteFiles(root, map[string]string{"skills/pdf/SKILL.md": skillMD("mit"), "LICENSE": mitText})).To(Succeed())
 		Expect(resolve()).To(Equal(skill.License{ID: "MIT", File: "LICENSE"}))
+	})
+
+	It("drops license files of another license than the declared one", func() {
+		Expect(testutil.WriteFiles(root, map[string]string{"skills/pdf/SKILL.md": skillMD("MIT"), "LICENSE": apacheText})).To(Succeed())
+		Expect(resolve()).To(Equal(skill.License{ID: "MIT"}))
+	})
+
+	It("passes over a contradicting skill license file for a matching repository one", func() {
+		Expect(testutil.WriteFiles(root, map[string]string{
+			"skills/pdf/SKILL.md": skillMD("GPL-3.0-or-later"),
+			"skills/pdf/LICENSE":  apacheText,
+			"COPYING":             gpl3Text,
+		})).To(Succeed())
+		Expect(resolve()).To(Equal(skill.License{ID: "GPL-3.0-or-later", File: "COPYING"}))
+	})
+
+	It("identifies a license file the frontmatter names", func() {
+		Expect(testutil.WriteFiles(root, map[string]string{
+			"skills/pdf/SKILL.md":    skillMD("LICENSE.txt"),
+			"skills/pdf/LICENSE.txt": mitText,
+		})).To(Succeed())
+		Expect(resolve()).To(Equal(skill.License{ID: "MIT", File: "skills/pdf/LICENSE.txt"}))
+	})
+
+	It("reads a license file with another name that the frontmatter names", func() {
+		Expect(testutil.WriteFiles(root, map[string]string{
+			"skills/pdf/SKILL.md":    skillMD("LICENSE-MIT"),
+			"skills/pdf/LICENSE-MIT": mitText,
+			"LICENSE":                apacheText,
+		})).To(Succeed())
+		Expect(resolve()).To(Equal(skill.License{ID: "MIT", File: "skills/pdf/LICENSE-MIT"}))
 	})
 
 	It("keeps SPDX expressions", func() {

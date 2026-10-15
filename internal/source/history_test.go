@@ -110,10 +110,13 @@ var _ = Describe("Versions", func() {
 		})
 
 		It("writes the license files of the repository root", func() {
-			commit("license", map[string]string{"LICENSE": "MIT", "LICENSE-THIRD-PARTY": "other"})
+			Expect(testutil.WriteFiles(origin, map[string]string{"LICENSE": "MIT", "COPYING": "GPL", "LICENSE-THIRD-PARTY": "other"})).To(Succeed())
+			Expect(os.Chmod(filepath.Join(origin, "COPYING"), 0o755)).To(Succeed())
+			commit("license", nil)
 			co, err := m.FetchCommit(ctx, testutil.FileURL(origin), "", commits["license"], "skills/a")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(os.ReadFile(filepath.Join(co.Dir, "LICENSE"))).To(BeEquivalentTo("MIT"))
+			Expect(os.ReadFile(filepath.Join(co.Dir, "COPYING"))).To(BeEquivalentTo("GPL"), "executable license files too")
 			Expect(filepath.Join(co.Dir, "LICENSE-THIRD-PARTY")).NotTo(BeAnExistingFile())
 			Expect(filepath.Join(co.Dir, "README.md")).NotTo(BeAnExistingFile())
 		})

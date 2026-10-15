@@ -62,41 +62,117 @@ func IsLicenseFile(name string) bool {
 // field of its frontmatter, a license file in the skill directory, or one in
 // root (the repository the skill was found in).
 func (s *Skill) ResolveLicense(root string) {
-	s.License = DetectLicense(s.Dir, root, s.License.ID)
+	s.resolveLicense(root, licenseFinder{})
+}
+
+func (s *Skill) resolveLicense(root string, lf licenseFinder) {
+	s.License = lf.detect(s.Dir, root, s.License.ID)
 }
 
 // DetectLicense determines a license from the frontmatter license field fm
-// and the first license file found in dir or, failing that, in root. A short
-// SPDX-like field wins; otherwise the license file is identified, so fields
-// like "Complete terms in LICENSE.txt" resolve to the license of that file.
+// and the license files in dir and root. A field naming a license wins, with
+// the first license file that does not contradict it; otherwise the first
+// license file found is identified, so fields like "Complete terms in
+// LICENSE.txt" resolve to the license of that file.
 func DetectLicense(dir, root, fm string) License {
-	fm = strings.TrimSpace(Clean(fm))
-	var l License
-	file := findLicenseFile(dir)
-	if file == "" && root != "" && filepath.Clean(root) != filepath.Clean(dir) {
-		file = findLicenseFile(root)
+	return licenseFinder{}.detect(dir, root, fm)
+}
+
+// foundLicense is a license file and the license identified in it.
+type foundLicense struct {
+	file, id string
+}
+
+// licenseFinder caches the license file of each directory it looked at, so
+// the license of a repository is read once for all of its skills.
+type licenseFinder map[string]foundLicense
+
+func (lf licenseFinder) find(dir string) foundLicense {
+	if f, ok := lf[dir]; ok {
+		return f
 	}
+	f := identifyFile(findLicenseFile(dir))
+	lf[dir] = f
+	return f
+}
+
+func identifyFile(file string) foundLicense {
+	f := foundLicense{file: file}
 	if file != "" {
-		if root == "" {
-			root = dir
+		if data, err := readLimited(file); err == nil {
+			f.id = Identify(string(data))
 		}
-		if rel, err := filepath.Rel(root, file); err == nil && filepath.IsLocal(rel) {
+	}
+	return f
+}
+
+func (lf licenseFinder) detect(dir, root, fm string) License {
+	fm = strings.TrimSpace(Clean(fm))
+	if root == "" {
+		root = dir
+	}
+	var candidates []foundLicense
+	named := namedFile(dir, fm)
+	if named != "" {
+		candidates = append(candidates, identifyFile(named))
+	}
+	candidates = append(candidates, lf.find(dir))
+	if filepath.Clean(root) != filepath.Clean(dir) {
+		candidates = append(candidates, lf.find(root))
+	}
+
+	var l License
+	use := func(f foundLicense) {
+		if rel, err := filepath.Rel(root, f.file); err == nil && filepath.IsLocal(rel) {
 			l.File = filepath.ToSlash(rel)
 		}
 	}
-	if id, ok := spdxID(fm); ok {
+	if id, ok := spdxID(fm); ok && named == "" && !IsLicenseFile(fm) {
 		l.ID = id
+		for _, f := range candidates {
+			// A file with another well-known license is not the declared one.
+			if f.file != "" && (f.id == "" || mentions(id, f.id)) {
+				use(f)
+				break
+			}
+		}
 		return l
 	}
-	if file != "" {
-		if data, err := readLimited(file); err == nil {
-			l.ID = Identify(string(data))
+	for _, f := range candidates {
+		if f.file != "" {
+			use(f)
+			l.ID = f.id
+			break
 		}
 	}
 	if l.ID == "" {
 		l.ID = fm
 	}
 	return l
+}
+
+// namedFile returns the file in dir that the license field fm names, as in
+// "license: LICENSE-MIT", or "" when it names none.
+func namedFile(dir, fm string) string {
+	if dir == "" || fm == "" || !filepath.IsLocal(fm) || strings.ContainsAny(fm, `/\ `) {
+		return ""
+	}
+	p := filepath.Join(dir, fm)
+	if fi, err := os.Lstat(p); err != nil || !fi.Mode().IsRegular() {
+		return ""
+	}
+	return p
+}
+
+// mentions reports whether the SPDX expression expr includes the license
+// id, ignoring suffixes such as "-only" and "-or-later".
+func mentions(expr, id string) bool {
+	for _, f := range strings.Fields(strings.NewReplacer("(", " ", ")", " ").Replace(expr)) {
+		if strings.HasPrefix(strings.ToLower(f), strings.ToLower(id)) {
+			return true
+		}
+	}
+	return false
 }
 
 func findLicenseFile(dir string) string {
@@ -211,11 +287,6 @@ type licenseRule struct {
 // first. Texts are compared lower case with collapsed whitespace.
 var licenseRules = []licenseRule{
 	{id: "Unlicense", all: []string{"this is free and unencumbered software released into the public domain"}},
-	{id: "AGPL-3.0", all: []string{"gnu affero general public license", "version 3"}},
-	{id: "LGPL-3.0", all: []string{"gnu lesser general public license", "version 3"}},
-	{id: "LGPL-2.1", all: []string{"gnu lesser general public license", "version 2.1"}},
-	{id: "GPL-3.0", all: []string{"gnu general public license", "version 3"}},
-	{id: "GPL-2.0", all: []string{"gnu general public license", "version 2"}},
 	{id: "Apache-2.0", all: []string{"apache license", "version 2.0"}},
 	{id: "MPL-2.0", all: []string{"mozilla public license", "2.0"}},
 	{id: "CC0-1.0", all: []string{"cc0 1.0"}},
@@ -232,6 +303,9 @@ var licenseRules = []licenseRule{
 // not one of the well-known licenses.
 func Identify(text string) string {
 	text = strings.ToLower(strings.Join(strings.Fields(text), " "))
+	if id := identifyGNU(text); id != "" {
+		return id
+	}
 	for _, r := range licenseRules {
 		if containsAll(text, r.all) && !containsAny(text, r.not) {
 			return r.id
@@ -256,4 +330,39 @@ func containsAny(s string, subs []string) bool {
 		}
 	}
 	return false
+}
+
+// gnuLicenses are the titles of the GNU licenses and the SPDX identifier of
+// each version.
+var gnuLicenses = []struct {
+	title    string
+	versions map[string]string
+}{
+	{"gnu affero general public license", map[string]string{"3": "AGPL-3.0"}},
+	{"gnu lesser general public license", map[string]string{"3": "LGPL-3.0", "2.1": "LGPL-2.1"}},
+	{"gnu general public license", map[string]string{"3": "GPL-3.0", "2": "GPL-2.0"}},
+}
+
+var gnuVersion = regexp.MustCompile(`version (\d(?:\.\d)?)`)
+
+// identifyGNU identifies a GNU license by the title that comes first: each
+// of them mentions the others further down, as the GPL does the AGPL.
+func identifyGNU(text string) string {
+	best, at := -1, len(text)
+	for i, l := range gnuLicenses {
+		if j := strings.Index(text, l.title); j >= 0 && j < at {
+			best, at = i, j
+		}
+	}
+	if best < 0 {
+		return ""
+	}
+	// The version follows the title, also in notices such as "the GNU
+	// General Public License as published by the Free Software Foundation,
+	// either version 3".
+	window := text[at:min(len(text), at+160)]
+	if m := gnuVersion.FindStringSubmatch(window); m != nil {
+		return gnuLicenses[best].versions[m[1]]
+	}
+	return ""
 }

@@ -67,17 +67,7 @@ func licenseOfHit(e *env, v any) *licenseScreen {
 	default:
 		return nil
 	}
-	return newLicenseScreen(e, name, func() (string, error) {
-		co, skills, err := e.app.Load(e.ctx, src, ref, false)
-		if err != nil {
-			return "", err
-		}
-		selected, err := app.Select(skills, []string{sel})
-		if err != nil {
-			return "", err
-		}
-		return app.LicenseText(co.Dir, selected[0].License)
-	})
+	return newLicenseScreen(e, name, func() (string, error) { return e.app.SkillLicenseText(e.ctx, src, ref, sel) })
 }
 
 func (s *licenseScreen) Title() string { return s.name + " license" }

@@ -76,7 +76,8 @@ func (m *Manager) FetchCommit(ctx context.Context, src, ref, commit, skillPath s
 	if !plumbing.IsHash(commit) {
 		return nil, fmt.Errorf("invalid commit %q", commit)
 	}
-	dir := m.cachePath(src, commit+":"+skillPath)
+	// Trees cached under the old key lack the repository's license files.
+	dir := m.cachePath(src, commit+":"+skillPath+":licenses")
 	if !IsLocal(src) && ref != "" {
 		// Cached trees need no history; only the ref has to be known.
 		if _, err := os.Stat(dir); err == nil {
@@ -386,7 +387,7 @@ func writeLicenses(c *object.Commit, root *object.Tree, dir, tmp string) error {
 		}
 	}
 	for _, e := range tree.Entries {
-		if e.Mode != filemode.Regular || !skill.IsLicenseFile(e.Name) {
+		if e.Mode != filemode.Regular && e.Mode != filemode.Executable || !skill.IsLicenseFile(e.Name) {
 			continue
 		}
 		f, err := tree.TreeEntryFile(&e)

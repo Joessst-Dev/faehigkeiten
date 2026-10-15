@@ -80,7 +80,7 @@ var _ = Describe("Installer", func() {
 		Expect(testutil.WriteFiles(repoDir, map[string]string{"LICENSE": "Permission is hereby granted, free of charge\nThe above copyright notice and this permission notice shall be included"})).To(Succeed())
 		e, err := in.Install(install.Request{Skill: find("pdf"), Checkout: co, Agents: []agent.Agent{claude}})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(e.License).To(Equal("MIT"))
+		Expect(install.License(e)).To(Equal(skill.License{ID: "MIT", File: "LICENSE"}))
 		Expect(e.LicenseFile).To(Equal("LICENSE"))
 	})
 

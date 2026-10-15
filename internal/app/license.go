@@ -7,11 +7,13 @@ import (
 	"io/fs"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/install"
 	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
+	"github.com/Joessst-Dev/faehigkeiten/internal/source"
 )
 
 // ErrNoLicense is returned when a skill declares no license and has no
@@ -38,6 +40,29 @@ func FoundLicenseText(f install.Found) (string, error) {
 	return LicenseText(f.Dirs[0], f.License)
 }
 
+// SkillLicenseText returns the license text of the skill named name (its
+// name, path or directory name) in the branch or tag ref of src.
+func (a *App) SkillLicenseText(ctx context.Context, src, ref, name string) (string, error) {
+	co, skills, err := a.Load(ctx, src, ref, false)
+	if err != nil {
+		return "", err
+	}
+	selected, err := Select(skills, []string{name})
+	if err != nil {
+		// Directories such as skills.sh lists them are named by the directory.
+		i := slices.IndexFunc(skills, func(s skill.Skill) bool { return strings.EqualFold(path.Base(s.Path), name) })
+		if i < 0 {
+			return "", err
+		}
+		selected = skills[i : i+1]
+	}
+	text, err := LicenseText(co.Dir, selected[0].License)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", selected[0].Name, err)
+	}
+	return text, nil
+}
+
 // EntryLicenseText returns the license text of an installed skill. License
 // files inside the skill are read from the installed copy; others, such as a
 // repository's root license, from the cached source.
@@ -46,42 +71,71 @@ func (a *App) EntryLicenseText(ctx context.Context, in *install.Installer, e loc
 	if err != nil {
 		return "", err
 	}
-	if e.License == "" && e.LicenseFile == "" {
+	l := install.License(e)
+	if l == (skill.License{}) {
 		// Recorded without a license, e.g. by an older version: look at the
-		// installed copy.
+		// installed copy, then at the repository it came from.
 		s, err := skill.ParseFile(filepath.Join(dir, skill.FileName))
 		if err != nil {
 			return "", err
 		}
 		s.Dir = dir
 		s.ResolveLicense(dir)
-		return LicenseText(dir, s.License)
+		if s.License.Label() != "" || e.Source == "" {
+			return LicenseText(dir, s.License)
+		}
+		return a.sourceLicenseText(ctx, e, nil)
 	}
-	if e.LicenseFile == "" {
-		return LicenseText(dir, skill.License{ID: e.License})
+	if l.File == "" || e.Source == "" && !inSkill(e.Path, l.File) {
+		return LicenseText(dir, skill.License{ID: l.ID})
 	}
-	if p := path.Clean(e.Path); p == "." || strings.HasPrefix(e.LicenseFile, p+"/") {
-		rel := strings.TrimPrefix(e.LicenseFile, p+"/")
+	if inSkill(e.Path, l.File) {
+		rel, _ := strings.CutPrefix(l.File, path.Clean(e.Path)+"/")
 		return LicenseText(dir, skill.License{File: rel})
 	}
-	if e.Source == "" {
-		return LicenseText(dir, skill.License{ID: e.License})
-	}
-	l := skill.License{File: e.LicenseFile}
-	if e.Commit != "" {
-		co, err := a.Sources.FetchCommit(ctx, e.Source, e.Ref, e.Commit, e.Path)
+	return a.sourceLicenseText(ctx, e, &l)
+}
+
+func inSkill(skillPath, file string) bool {
+	p := path.Clean(skillPath)
+	return p == "." || strings.HasPrefix(file, p+"/")
+}
+
+// sourceLicenseText reads license l from the source of e, or resolves the
+// license of the skill there when l is nil. It prefers the installed commit
+// and falls back to the latest cached checkout when that commit cannot be
+// fetched or lacks the file.
+func (a *App) sourceLicenseText(ctx context.Context, e lock.Entry, l *skill.License) (string, error) {
+	read := func(co *source.Checkout) (string, error) {
+		if l != nil {
+			return LicenseText(co.Dir, *l)
+		}
+		dir, err := co.SkillDir(e.Path)
 		if err != nil {
 			return "", err
 		}
-		text, err := LicenseText(co.Dir, l)
-		if !errors.Is(err, fs.ErrNotExist) {
-			return text, err
+		s, err := skill.ParseFile(filepath.Join(dir, skill.FileName))
+		if err != nil {
+			return "", err
 		}
-		// Commit trees cached by older versions lack the root license files.
+		s.Dir = dir
+		s.ResolveLicense(co.Dir)
+		return LicenseText(co.Dir, s.License)
+	}
+	var firstErr error
+	if e.Commit != "" {
+		co, err := a.Sources.FetchCommit(ctx, e.Source, e.Ref, e.Commit, e.Path)
+		if err == nil {
+			text, err := read(co)
+			if err == nil || !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, ErrNoLicense) {
+				return text, err
+			}
+		}
+		firstErr = err
 	}
 	co, err := a.Sources.Fetch(ctx, e.Source, e.Ref, false)
 	if err != nil {
-		return "", err
+		return "", errors.Join(firstErr, err)
 	}
-	return LicenseText(co.Dir, l)
+	return read(co)
 }

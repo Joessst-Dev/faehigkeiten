@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/go-git/go-git/v5"
 	. "github.com/onsi/ginkgo/v2"
@@ -104,6 +105,56 @@ var _ = Describe("CLI", func() {
 			code, _, errOut = run("license", "missing", "-p", project)
 			Expect(code).To(Equal(1))
 			Expect(errOut).To(ContainSubstring("not installed"))
+		})
+
+		It("reads the repository license when the installed commit is gone or no license was recorded", func() {
+			code, _, errOut := run("install", origin, "alpha", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			lf, err := lock.Load(filepath.Join(project, lock.FileName))
+			Expect(err).NotTo(HaveOccurred())
+			e, _ := lf.Get("alpha")
+			e.Commit = strings.Repeat("0", 40)
+			lf.Upsert(e)
+			Expect(lf.Save()).To(Succeed())
+			code, out, errOut := run("license", "alpha", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("Permission is hereby granted"))
+
+			e.License, e.LicenseFile = "", ""
+			lf.Upsert(e)
+			Expect(lf.Save()).To(Succeed())
+			code, out, errOut = run("license", "alpha", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("Permission is hereby granted"))
+		})
+
+		It("keeps a descriptive license field in full", func() {
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"skills/gamma/SKILL.md": "---\nname: gamma\ndescription: d\nlicense: Proprietary. Internal use only\n---\n",
+				"skills/gamma/LICENSE":  mit,
+			}, "gamma")).To(Succeed())
+			Expect(os.Remove(filepath.Join(origin, "skills", "gamma", "LICENSE"))).To(Succeed())
+			Expect(testutil.Commit(repo, origin, nil, "drop gamma license")).To(Succeed())
+			Expect(os.Remove(filepath.Join(origin, "LICENSE"))).To(Succeed())
+			Expect(testutil.Commit(repo, origin, nil, "drop license")).To(Succeed())
+
+			code, _, errOut := run("install", origin, "gamma", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			code, out, _ := run("list", "-p", project)
+			Expect(code).To(Equal(0))
+			Expect(out).To(MatchRegexp(`gamma\s+untracked\s+Proprietary\s+claude-code`))
+			code, out, errOut = run("license", "gamma", "-p", project)
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal("Proprietary. Internal use only\n"))
+		})
+
+		It("finds skills of a source by their directory name", func() {
+			Expect(testutil.Commit(repo, origin, map[string]string{
+				"skills/delta-dir/SKILL.md": testutil.SkillMD("delta", "d", ""),
+			}, "delta")).To(Succeed())
+			code, out, errOut := run("license", origin, "delta-dir")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("Permission is hereby granted"))
 		})
 	})
 

@@ -162,7 +162,9 @@ The license of a skill is taken from, in order:
 
 Well-known license texts (MIT, Apache-2.0, BSD, ISC, MPL, GPL, LGPL, AGPL, Unlicense, CC0, CC-BY) are
 recognised and shown by their SPDX identifier; other license files are shown as *custom*. When the
-`license` field is a sentence such as `Complete terms in LICENSE.txt`, the file it refers to decides.
+`license` field is a sentence such as `Complete terms in LICENSE.txt` or a file name such as
+`LICENSE-MIT`, the file it refers to decides. A license file of another well-known license than the
+one the field names is ignored.
 Lists show the license in a `LICENSE` column (CLI) or next to the description (TUI); `fgk license`
 and <kbd>l</kbd> in the TUI print the full text. The license is recorded in the lockfile at install
 time.

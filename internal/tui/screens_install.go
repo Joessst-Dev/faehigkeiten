@@ -442,7 +442,7 @@ func (s *installedScreen) reload() {
 		items = append(items, pickItem{
 			Title:   e.Name,
 			Badge:   install.Describe(e),
-			Desc:    withLicense(source.DisplayName(e.Source)+" • "+strings.Join(e.Agents, ", "), e.License),
+			Desc:    withLicense(source.DisplayName(e.Source)+" • "+strings.Join(e.Agents, ", "), install.License(e).Label()),
 			NoCheck: true,
 			Value:   e,
 		})
