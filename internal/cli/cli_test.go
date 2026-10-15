@@ -105,6 +105,10 @@ var _ = Describe("CLI", func() {
 			code, _, errOut = run("license", "missing", "-p", project)
 			Expect(code).To(Equal(1))
 			Expect(errOut).To(ContainSubstring("not installed"))
+
+			code, _, errOut = run("license", origin, "alpha", "-g")
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("cannot be used with a source"))
 		})
 
 		editEntry := func(name string, change func(*lock.Entry)) {
@@ -123,6 +127,27 @@ var _ = Describe("CLI", func() {
 			code, out, errOut := run("license", "alpha", "-p", project)
 			Expect(code).To(Equal(0), errOut)
 			Expect(out).To(ContainSubstring("Permission is hereby granted"))
+			Expect(out).NotTo(ContainSubstring("note:"), "the note goes to stderr")
+			Expect(errOut).To(ContainSubstring("note: the installed commit 0000000 is unavailable"))
+		})
+
+		It("refuses tampered license fields in the lockfile", func() {
+			code, _, errOut := run("install", origin, "alpha", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			editEntry("alpha", func(e *lock.Entry) { e.LicenseFile = "skills/alpha/../../../../etc/passwd" })
+			code, _, errOut = run("list", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("invalid license file"))
+
+			lockPath := filepath.Join(project, lock.FileName)
+			data, err := os.ReadFile(lockPath)
+			Expect(err).NotTo(HaveOccurred())
+			data = []byte(strings.Replace(string(data), "license_file: skills/alpha/../../../../etc/passwd", "", 1))
+			data = []byte(strings.Replace(string(data), "license: MIT", `license: "\e]52;c;x\a"`, 1))
+			Expect(os.WriteFile(lockPath, data, 0o644)).To(Succeed())
+			code, _, errOut = run("list", "-p", project)
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("invalid value"))
 		})
 
 		It("reads a license file deleted from the installed copy from the source", func() {

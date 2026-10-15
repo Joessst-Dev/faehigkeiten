@@ -302,6 +302,9 @@ SKILL.md.`,
 			}
 			var text string
 			if len(args) == 2 {
+				if scope.global || scope.project != "" {
+					return errors.New("--global and --project select installed skills; they cannot be used with a source")
+				}
 				if text, err = a.SkillLicenseText(cmd.Context(), args[0], ref, args[1]); err != nil {
 					return err
 				}
@@ -319,7 +322,10 @@ SKILL.md.`,
 				}
 				name := args[0]
 				if e, ok := in.Lock.Get(name); ok {
-					text, err = a.EntryLicenseText(cmd.Context(), in, e)
+					var note string
+					if text, note, err = a.EntryLicenseText(cmd.Context(), in, e); note != "" {
+						fmt.Fprintln(cmd.ErrOrStderr(), "note: "+note)
+					}
 				} else {
 					found := in.Unmanaged()
 					i := slices.IndexFunc(found, func(f install.Found) bool { return f.Name == name })

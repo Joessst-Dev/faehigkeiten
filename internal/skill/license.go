@@ -120,6 +120,9 @@ func (lf licenseFinder) detect(dir, root, fm string) License {
 	}
 	var candidates []foundLicense
 	named := namedFile(dir, fm)
+	if named == "" && filepath.Clean(root) != filepath.Clean(dir) {
+		named = namedFile(root, fm)
+	}
 	if named != "" {
 		candidates = append(candidates, identifyFile(named))
 	}
@@ -159,7 +162,7 @@ func (lf licenseFinder) detect(dir, root, fm string) License {
 }
 
 // namedFile returns the file in dir that the license field fm names, as in
-// "license: LICENSE-MIT", or "" when it names none.
+// "license: LICENSE-MIT", or "" when there is none.
 func namedFile(dir, fm string) string {
 	if dir == "" || fm == "" || !filepath.IsLocal(fm) || strings.ContainsAny(fm, `/\ `) {
 		return ""
@@ -334,8 +337,10 @@ type licenseRule struct {
 	not []string
 }
 
-// licenseRules identify license texts by phrases they contain, most specific
-// first. Texts are compared lower case with collapsed whitespace.
+// licenseRules identify license texts by phrases they contain. The first
+// phrase locates a license in the text; among rules locating one at the same
+// place, the more specific comes first. Texts are compared lower case with
+// collapsed whitespace.
 var licenseRules = []licenseRule{
 	{id: "Unlicense", all: []string{"this is free and unencumbered software released into the public domain"}},
 	{id: "Apache-2.0", all: []string{"apache license", "version 2.0"}},
@@ -354,15 +359,16 @@ var licenseRules = []licenseRule{
 // not one of the well-known licenses.
 func Identify(text string) string {
 	text = strings.ToLower(strings.Join(strings.Fields(text), " "))
-	if id := identifyGNU(text); id != "" {
-		return id
-	}
+	// The license that starts first is the file's own; later ones are
+	// usually notices of bundled third-party code.
+	id, at := identifyGNU(text)
 	for _, r := range licenseRules {
-		if containsAll(text, r.all) && !containsAny(text, r.not) {
-			return r.id
+		i := strings.Index(text, r.all[0])
+		if i >= 0 && (id == "" || i < at) && containsAll(text, r.all) && !containsAny(text, r.not) {
+			id, at = r.id, i
 		}
 	}
-	return ""
+	return id
 }
 
 func containsAll(s string, subs []string) bool {
@@ -396,9 +402,10 @@ var gnuLicenses = []struct {
 
 var gnuVersion = regexp.MustCompile(`version (\d(?:\.\d)?)`)
 
-// identifyGNU identifies a GNU license by the title that comes first: each
-// of them mentions the others further down, as the GPL does the AGPL.
-func identifyGNU(text string) string {
+// identifyGNU identifies a GNU license by the title that comes first, and
+// returns where it starts: each of them mentions the others further down, as
+// the GPL does the AGPL.
+func identifyGNU(text string) (string, int) {
 	best, at := -1, len(text)
 	for i, l := range gnuLicenses {
 		if j := strings.Index(text, l.title); j >= 0 && j < at {
@@ -406,14 +413,16 @@ func identifyGNU(text string) string {
 		}
 	}
 	if best < 0 {
-		return ""
+		return "", -1
 	}
 	// The version follows the title, also in notices such as "the GNU
 	// General Public License as published by the Free Software Foundation,
 	// either version 3".
 	window := text[at:min(len(text), at+160)]
 	if m := gnuVersion.FindStringSubmatch(window); m != nil {
-		return gnuLicenses[best].versions[m[1]]
+		if id := gnuLicenses[best].versions[m[1]]; id != "" {
+			return id, at
+		}
 	}
-	return ""
+	return "", -1
 }

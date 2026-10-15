@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -139,7 +140,12 @@ func (e Entry) validate() error {
 	if e.Path != "" && e.Path != "." && !filepath.IsLocal(filepath.FromSlash(e.Path)) {
 		return fmt.Errorf("skill %s: invalid path %q", e.Name, e.Path)
 	}
-	for _, v := range append([]string{e.Source, e.Path, e.Ref, e.Commit, e.Version, e.Hash, string(e.Tracking)}, e.Agents...) {
+	// License files are read below the skill or source directory, so their
+	// path must be canonical: "skills/pdf/../../x" would pass a prefix check.
+	if f := e.LicenseFile; f != "" && (path.Clean(f) != f || !filepath.IsLocal(filepath.FromSlash(f))) {
+		return fmt.Errorf("skill %s: invalid license file %q", e.Name, f)
+	}
+	for _, v := range append([]string{e.Source, e.Path, e.Ref, e.Commit, e.Version, e.Hash, string(e.Tracking), e.License, e.LicenseFile}, e.Agents...) {
 		if hasControl(v) {
 			return fmt.Errorf("skill %s: invalid value %q", e.Name, v)
 		}

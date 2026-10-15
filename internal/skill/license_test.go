@@ -39,6 +39,7 @@ var _ = Describe("Identify", func() {
 		Entry("AGPL-3.0", "GNU AFFERO GENERAL PUBLIC LICENSE\nVersion 3, 19 November 2007", "AGPL-3.0"),
 		Entry("BSD-3-Clause", "Redistribution and use in source and binary forms ... Neither the name of", "BSD-3-Clause"),
 		Entry("BSD-2-Clause", "Redistribution and use in source and binary forms, with or without", "BSD-2-Clause"),
+		Entry("MIT quoting bundled licenses", mitText+"\nThird-party code:\n Apache License\n Version 2.0\n GNU General Public License, version 2\n", "MIT"),
 		Entry("unknown", "All rights reserved.", ""),
 	)
 })
@@ -83,6 +84,15 @@ var _ = Describe("license detection", func() {
 			"skills/pdf/LICENSE.txt": mitText,
 		})).To(Succeed())
 		Expect(resolve()).To(Equal(skill.License{ID: "MIT", File: "skills/pdf/LICENSE.txt"}))
+	})
+
+	It("identifies a repository license file the frontmatter names", func() {
+		Expect(testutil.WriteFiles(root, map[string]string{
+			"skills/pdf/SKILL.md": skillMD("LICENSE.txt"),
+			"LICENSE":             mitText,
+			"LICENSE.txt":         apacheText,
+		})).To(Succeed())
+		Expect(resolve()).To(Equal(skill.License{ID: "Apache-2.0", File: "LICENSE.txt"}))
 	})
 
 	It("reads a license file with another name that the frontmatter names", func() {

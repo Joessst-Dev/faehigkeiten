@@ -20,38 +20,39 @@ import (
 // ---- license text of a skill ----
 
 type licenseLoadedMsg struct {
-	text string
-	err  error
+	text, note string
+	err        error
 }
 
 type licenseScreen struct {
 	env     *env
 	name    string
-	load    func() (string, error)
+	load    func() (text, note string, err error)
 	loading bool
 	spin    spinner.Model
 	view    viewport.Model
 	text    string
-	width   int // width text was wrapped for
+	note    string // where the text comes from, when not the installed version
+	width   int    // width text was wrapped for
 	err     error
 }
 
-func newLicenseScreen(e *env, name string, load func() (string, error)) *licenseScreen {
+func newLicenseScreen(e *env, name string, load func() (text, note string, err error)) *licenseScreen {
 	return &licenseScreen{env: e, name: name, load: load, spin: newSpinner(), view: viewport.New(0, 0)}
 }
 
 // licenseOfSkill shows the license of a skill in a checkout.
 func licenseOfSkill(e *env, co *source.Checkout, s skill.Skill) *licenseScreen {
-	return newLicenseScreen(e, s.Name, func() (string, error) { return app.LicenseText(co.Dir, s.License) })
+	return newLicenseScreen(e, s.Name, noNote(func() (string, error) { return app.LicenseText(co.Dir, s.License) }))
 }
 
 // licenseOfInstalled shows the license of a lockfile entry or unmanaged skill.
 func licenseOfInstalled(e *env, in *install.Installer, v any) *licenseScreen {
 	switch v := v.(type) {
 	case lock.Entry:
-		return newLicenseScreen(e, v.Name, func() (string, error) { return e.app.EntryLicenseText(e.ctx, in, v) })
+		return newLicenseScreen(e, v.Name, func() (string, string, error) { return e.app.EntryLicenseText(e.ctx, in, v) })
 	case install.Found:
-		return newLicenseScreen(e, v.Name, func() (string, error) { return app.FoundLicenseText(v) })
+		return newLicenseScreen(e, v.Name, noNote(func() (string, error) { return app.FoundLicenseText(v) }))
 	}
 	return nil
 }
@@ -67,7 +68,15 @@ func licenseOfHit(e *env, v any) *licenseScreen {
 	default:
 		return nil
 	}
-	return newLicenseScreen(e, name, func() (string, error) { return e.app.SkillLicenseText(e.ctx, src, ref, sel) })
+	return newLicenseScreen(e, name, noNote(func() (string, error) { return e.app.SkillLicenseText(e.ctx, src, ref, sel) }))
+}
+
+// noNote adapts loaders of texts that always describe the shown version.
+func noNote(load func() (string, error)) func() (string, string, error) {
+	return func() (string, string, error) {
+		text, err := load()
+		return text, "", err
+	}
 }
 
 func (s *licenseScreen) Title() string { return s.name + " license" }
@@ -82,8 +91,8 @@ func (s *licenseScreen) Init() tea.Cmd {
 	s.loading = true
 	load := s.load
 	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
-		text, err := load()
-		return licenseLoadedMsg{text, err}
+		text, note, err := load()
+		return licenseLoadedMsg{text, note, err}
 	}))
 }
 
@@ -97,7 +106,7 @@ func (s *licenseScreen) Update(msg tea.Msg) tea.Cmd {
 		s.spin, cmd = s.spin.Update(msg)
 		return cmd
 	case licenseLoadedMsg:
-		s.loading, s.text, s.err = false, msg.text, msg.err
+		s.loading, s.text, s.note, s.err = false, msg.text, msg.note, msg.err
 		s.width = 0
 		return nil
 	case tea.KeyMsg:
@@ -123,10 +132,14 @@ func (s *licenseScreen) View() string {
 		return errStyle.Render("Could not load the license: " + s.err.Error())
 	}
 	w := s.env.bodyWidth()
-	s.view.Width, s.view.Height = w, s.env.bodyHeight()
+	head := ""
+	if s.note != "" {
+		head = warnStyle.Width(w).Render("Note: "+s.note) + "\n\n"
+	}
+	s.view.Width, s.view.Height = w, max(1, s.env.bodyHeight()-lipgloss.Height(head)+1)
 	if s.width != w {
 		s.width = w
 		s.view.SetContent(lipgloss.NewStyle().Width(w).Render(s.text))
 	}
-	return s.view.View()
+	return head + s.view.View()
 }

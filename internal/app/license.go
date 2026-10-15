@@ -13,6 +13,7 @@ import (
 	"github.com/Joessst-Dev/faehigkeiten/internal/install"
 	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
+	"github.com/Joessst-Dev/faehigkeiten/internal/source"
 )
 
 // ErrNoLicense is returned when a skill declares no license and has no
@@ -23,12 +24,37 @@ var ErrNoLicense = errors.New("no license found")
 // license file, or the license field when there is none.
 func LicenseText(root string, l skill.License) (string, error) {
 	if l.File != "" {
-		return skill.ReadLicenseText(filepath.Join(root, filepath.FromSlash(l.File)))
+		file, err := within(root, l.File)
+		if err != nil {
+			return "", err
+		}
+		return skill.ReadLicenseText(file)
 	}
 	if l.ID != "" {
 		return l.ID + "\n", nil
 	}
 	return "", ErrNoLicense
+}
+
+// within returns the slash-separated path rel below root, refusing paths
+// that leave it, also through symlinked directories of an untrusted tree.
+func within(root, rel string) (string, error) {
+	if !filepath.IsLocal(filepath.FromSlash(rel)) {
+		return "", fmt.Errorf("invalid license file %q", rel)
+	}
+	base, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	// The file itself is checked to be no symlink when it is read.
+	dir, err := filepath.EvalSymlinks(filepath.Join(base, filepath.Dir(filepath.FromSlash(rel))))
+	if err != nil {
+		return "", err
+	}
+	if r, err := filepath.Rel(base, dir); err != nil || !filepath.IsLocal(r) && r != "." {
+		return "", fmt.Errorf("license file %q is outside of %s", rel, root)
+	}
+	return filepath.Join(dir, filepath.Base(filepath.FromSlash(rel))), nil
 }
 
 // FoundLicenseText returns the license text of an unmanaged skill.
@@ -64,14 +90,15 @@ func (a *App) SkillLicenseText(ctx context.Context, src, ref, name string) (stri
 
 // EntryLicenseText returns the license text of an installed skill. License
 // files inside the skill are read from the installed copy; others, such as a
-// repository's root license, from the source at the installed commit.
-func (a *App) EntryLicenseText(ctx context.Context, in *install.Installer, e lock.Entry) (string, error) {
+// repository's root license, from the source at the installed commit. note
+// is set when the text comes from another version than the installed one.
+func (a *App) EntryLicenseText(ctx context.Context, in *install.Installer, e lock.Entry) (text, note string, err error) {
 	if e.NoLicense {
-		return "", ErrNoLicense
+		return "", "", ErrNoLicense
 	}
 	dir, err := in.InstalledDir(e)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	l := install.License(e)
 	switch {
@@ -80,14 +107,17 @@ func (a *App) EntryLicenseText(ctx context.Context, in *install.Installer, e loc
 		// the source it came from.
 		s, err := skill.LoadDir(dir, dir)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 		if s.License.Label() != "" || e.Source == "" {
-			return LicenseText(dir, s.License)
+			text, err := LicenseText(dir, s.License)
+			return text, "", err
 		}
-		return a.resolveSourceLicense(ctx, e)
+		text, err := a.resolveSourceLicense(ctx, e)
+		return text, "", err
 	case l.File == "":
-		return LicenseText(dir, l)
+		text, err := LicenseText(dir, l)
+		return text, "", err
 	case inSkill(e.Path, l.File):
 		rel, _ := strings.CutPrefix(l.File, path.Clean(e.Path)+"/")
 		text, err := LicenseText(dir, skill.License{File: rel})
@@ -96,9 +126,10 @@ func (a *App) EntryLicenseText(ctx context.Context, in *install.Installer, e loc
 			// different content.
 			return a.sourceLicenseFile(ctx, e, l.File)
 		}
-		return text, err
+		return text, "", err
 	case e.Source == "":
-		return LicenseText(dir, skill.License{ID: l.ID})
+		text, err := LicenseText(dir, skill.License{ID: l.ID})
+		return text, "", err
 	}
 	return a.sourceLicenseFile(ctx, e, l.File)
 }
@@ -109,24 +140,33 @@ func inSkill(skillPath, file string) bool {
 }
 
 // sourceLicenseFile reads the recorded license file of e from its source at
-// the installed commit. When that commit cannot be fetched, e.g. because the
-// history was rewritten or is not cached offline, it reads the file from the
-// latest cached checkout instead: the file is the one recorded at install.
-func (a *App) sourceLicenseFile(ctx context.Context, e lock.Entry, file string) (string, error) {
+// the installed commit, from the cached checkout when that is at the commit.
+// When the commit cannot be fetched, e.g. because the history was rewritten
+// or is not cached offline, it reads the file from the latest checkout and
+// says so in note: the source may have been relicensed since.
+func (a *App) sourceLicenseFile(ctx context.Context, e lock.Entry, file string) (text, note string, err error) {
 	l := skill.License{File: file}
-	var commitErr error
-	if e.Commit != "" {
-		co, err := a.Sources.FetchCommit(ctx, e.Source, e.Ref, e.Commit, e.Path)
-		if err == nil {
-			return LicenseText(co.Dir, l)
-		}
-		commitErr = err
+	latest, latestErr := a.Sources.Fetch(ctx, e.Source, e.Ref, false)
+	if latestErr == nil && (e.Commit == "" || latest.Commit == e.Commit) {
+		text, err := LicenseText(latest.Dir, l)
+		return text, "", err
 	}
-	co, err := a.Sources.Fetch(ctx, e.Source, e.Ref, false)
-	if err != nil {
-		return "", errors.Join(commitErr, err)
+	if e.Commit == "" {
+		return "", "", latestErr
 	}
-	return LicenseText(co.Dir, l)
+	co, commitErr := a.Sources.FetchCommit(ctx, e.Source, e.Ref, e.Commit, e.Path)
+	if commitErr == nil {
+		text, err := LicenseText(co.Dir, l)
+		return text, "", err
+	}
+	if latestErr != nil {
+		return "", "", errors.Join(commitErr, latestErr)
+	}
+	if text, err = LicenseText(latest.Dir, l); err != nil {
+		return "", "", errors.Join(commitErr, err)
+	}
+	return text, fmt.Sprintf("the installed commit %s is unavailable (%v); this is the license file of the latest version, which may differ",
+		source.ShortCommit(e.Commit), commitErr), nil
 }
 
 // resolveSourceLicense resolves the license of e, recorded without one, from
