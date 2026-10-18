@@ -12,11 +12,9 @@ import (
 	"time"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/object"
-	"github.com/go-git/go-git/v5/plumbing/transport"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
 )
@@ -156,7 +154,7 @@ func (m *Manager) history(ctx context.Context, src, ref string, refresh, anyBran
 	}
 	if err != nil {
 		// Missing or broken; clone it again.
-		if err := m.cloneHistory(ctx, src, ref, dir); err != nil {
+		if err := cloneInto(ctx, src, ref, dir, true, 0); err != nil {
 			unlock()
 			return nil, nil, err
 		}
@@ -168,24 +166,6 @@ func (m *Manager) history(ctx context.Context, src, ref string, refresh, anyBran
 	return h, unlock, nil
 }
 
-func (m *Manager) cloneHistory(ctx context.Context, src, ref, dir string) error {
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.MkdirTemp(filepath.Dir(dir), "."+filepath.Base(dir)+".tmp-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(tmp)
-	if err := cloneRepo(ctx, src, ref, tmp, true, 0); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
-	return os.Rename(tmp, dir)
-}
-
 func openHistory(dir, ref string) (*history, error) {
 	repo, err := git.PlainOpen(dir)
 	if err != nil {
@@ -195,11 +175,7 @@ func openHistory(dir, ref string) (*history, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &history{repo: repo, ref: ref}
-	if head.Name().IsBranch() || ref == "" {
-		h.ref = head.Name().Short()
-	}
-	return h, nil
+	return &history{repo: repo, ref: headRef(head, ref)}, nil
 }
 
 // fetchHistory updates the branch of a bare history clone. Tags are not
@@ -212,18 +188,7 @@ func fetchHistory(ctx context.Context, repo *git.Repository) error {
 	if !head.Name().IsBranch() {
 		return nil
 	}
-	return newAuthenticator(ctx, remoteURL(repo)).run(func(auth transport.AuthMethod) error {
-		err := repo.FetchContext(ctx, &git.FetchOptions{
-			RefSpecs: []config.RefSpec{config.RefSpec("+" + head.Name().String() + ":" + head.Name().String())},
-			Tags:     git.NoTags,
-			Force:    true,
-			Auth:     auth,
-		})
-		if errors.Is(err, git.NoErrAlreadyUpToDate) {
-			return nil
-		}
-		return err
-	})
+	return fetchRefSpec(ctx, repo, "+"+head.Name().String()+":"+head.Name().String(), 0)
 }
 
 // localHistory opens the repository containing the local directory src.
@@ -356,7 +321,7 @@ func writeTree(c *object.Commit, sub, licenses, dir string) error {
 	}
 	defer os.RemoveAll(tmp)
 	err = tree.Files().ForEach(func(f *object.File) error {
-		if f.Mode != filemode.Regular && f.Mode != filemode.Executable {
+		if !isPlainFileMode(f.Mode) {
 			// Symlinks could point anywhere and are not installed anyway.
 			return nil
 		}
@@ -396,7 +361,7 @@ func writeLicenses(c *object.Commit, root *object.Tree, dir, tmp string) error {
 		}
 	}
 	for _, e := range tree.Entries {
-		if e.Mode != filemode.Regular && e.Mode != filemode.Executable || !skill.IsLicenseFile(e.Name) {
+		if !isPlainFileMode(e.Mode) || !skill.IsLicenseFile(e.Name) {
 			continue
 		}
 		f, err := tree.TreeEntryFile(&e)
@@ -409,6 +374,12 @@ func writeLicenses(c *object.Commit, root *object.Tree, dir, tmp string) error {
 		}
 	}
 	return nil
+}
+
+// isPlainFileMode reports whether m is a regular or executable file, as
+// opposed to e.g. a symlink or submodule.
+func isPlainFileMode(m filemode.FileMode) bool {
+	return m == filemode.Regular || m == filemode.Executable
 }
 
 func writeBlob(f *object.File, p string) error {
