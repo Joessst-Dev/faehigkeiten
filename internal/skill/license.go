@@ -65,17 +65,13 @@ func LoadDir(dir, root string) (Skill, error) {
 		return Skill{}, err
 	}
 	s.Dir = dir
-	s.ResolveLicense(root)
+	s.resolveLicense(root, licenseFinder{})
 	return s, nil
 }
 
-// ResolveLicense determines the license of the skill in s.Dir: the license
+// resolveLicense determines the license of the skill in s.Dir: the license
 // field of its frontmatter, a license file in the skill directory, or one in
 // root (the repository the skill was found in).
-func (s *Skill) ResolveLicense(root string) {
-	s.resolveLicense(root, licenseFinder{})
-}
-
 func (s *Skill) resolveLicense(root string, lf licenseFinder) {
 	s.License = lf.detect(s.Dir, root, s.License.ID)
 }
@@ -118,16 +114,17 @@ func (lf licenseFinder) detect(dir, root, fm string) License {
 	if root == "" {
 		root = dir
 	}
+	separateRoot := filepath.Clean(root) != filepath.Clean(dir)
 	var candidates []foundLicense
 	named := namedFile(dir, fm)
-	if named == "" && filepath.Clean(root) != filepath.Clean(dir) {
+	if named == "" && separateRoot {
 		named = namedFile(root, fm)
 	}
 	if named != "" {
 		candidates = append(candidates, identifyFile(named))
 	}
 	candidates = append(candidates, lf.find(dir))
-	if filepath.Clean(root) != filepath.Clean(dir) {
+	if separateRoot {
 		candidates = append(candidates, lf.find(root))
 	}
 
@@ -288,7 +285,7 @@ func spdxID(fm string) (string, bool) {
 			continue
 		}
 		op := strings.ToUpper(f)
-		isOp := op == "OR" || op == "AND" || op == "WITH"
+		isOp := isSPDXOperator(op)
 		if n%2 == 1 != isOp {
 			return "", false
 		}
@@ -308,13 +305,18 @@ func spdxID(fm string) (string, bool) {
 	if n > 1 {
 		// Words such as "MIT or later" are not an expression: every operand
 		// must look like a license identifier.
-		for i := 0; i < len(out); i++ {
-			if f := out[i]; f != "(" && f != ")" && f != "OR" && f != "AND" && f != "WITH" && !idLike(f) {
+		for _, f := range out {
+			if f != "(" && f != ")" && !isSPDXOperator(f) && !idLike(f) {
 				return "", false
 			}
 		}
 	}
 	return strings.NewReplacer("( ", "(", " )", ")").Replace(strings.Join(out, " ")), true
+}
+
+// isSPDXOperator reports whether s is an upper-case SPDX expression operator.
+func isSPDXOperator(s string) bool {
+	return s == "OR" || s == "AND" || s == "WITH"
 }
 
 func canonicalID(f string) string {
