@@ -151,10 +151,10 @@ func (a *App) Versions(ctx context.Context, src, ref, path string, refresh bool)
 	return vs, nil
 }
 
-// LoadVersion fetches the skill at path of src as it was at version.
+// loadVersion fetches the skill at path of src as it was at version.
 // Refresh updates the cached history first; installing several versions from
 // one source only needs to do that once.
-func (a *App) LoadVersion(ctx context.Context, src, ref, path, version string, refresh bool) (*source.Checkout, skill.Skill, error) {
+func (a *App) loadVersion(ctx context.Context, src, ref, path, version string, refresh bool) (*source.Checkout, skill.Skill, error) {
 	vs, err := a.Versions(ctx, src, ref, path, refresh)
 	if err != nil {
 		return nil, skill.Skill{}, err
@@ -188,10 +188,10 @@ func (a *App) LoadCommit(ctx context.Context, src, ref, path, commit string) (*s
 	return co, s, nil
 }
 
-// KeptPin returns the lockfile entry that keeps s pinned when it is installed
+// keptPin returns the lockfile entry that keeps s pinned when it is installed
 // from co without a version: a pin of the same source, path and ref.
 // Installing from another ref replaces the pin.
-func KeptPin(in *install.Installer, co *source.Checkout, s skill.Skill) (lock.Entry, bool) {
+func keptPin(in *install.Installer, co *source.Checkout, s skill.Skill) (lock.Entry, bool) {
 	e, ok := in.Lock.Get(install.DirName(s.Name))
 	if !ok || !e.Pinned || e.Commit == "" || e.Source != co.URL || e.Path != s.Path || e.Ref != co.Ref {
 		return lock.Entry{}, false
@@ -218,14 +218,14 @@ type Pin struct {
 
 // PinFor decides, without fetching anything, whether installing s from co
 // with sel pins it:
-//   - "": only if the skill is pinned already (see KeptPin), which keeps it
+//   - "": only if the skill is pinned already (see keptPin), which keeps it
 //     at its pinned commit;
 //   - Latest: never; a pin is removed;
 //   - anything else: always, at that version.
 func PinFor(in *install.Installer, co *source.Checkout, s skill.Skill, sel Selector) Pin {
 	switch sel.Version {
 	case "":
-		if e, ok := KeptPin(in, co, s); ok {
+		if e, ok := keptPin(in, co, s); ok {
 			return Pin{Pinned: true, Version: e.Version, Commit: e.Commit}
 		}
 	case Latest:
@@ -250,7 +250,7 @@ func (a *App) Prepare(ctx context.Context, in *install.Installer, co *source.Che
 	if pin.Commit != "" {
 		req.Checkout, req.Skill, err = a.LoadCommit(ctx, co.URL, co.Ref, s.Path, pin.Commit)
 	} else {
-		req.Checkout, req.Skill, err = a.LoadVersion(ctx, co.URL, co.Ref, s.Path, pin.Version, refresh)
+		req.Checkout, req.Skill, err = a.loadVersion(ctx, co.URL, co.Ref, s.Path, pin.Version, refresh)
 	}
 	if err != nil {
 		return req, fmt.Errorf("%s at %s: %w", s.Name, pin.Version, err)

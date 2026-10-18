@@ -196,19 +196,18 @@ func (in *Installer) Install(req Request) (lock.Entry, error) {
 			return lock.Entry{}, err
 		}
 	}
-	if !req.Force {
-		for _, d := range dirs {
-			target := filepath.Join(d, name)
-			if exists(target) && !slices.Contains(prevDirs, d) {
-				return lock.Entry{}, fmt.Errorf("%w: %s", ErrConflict, target)
-			}
-		}
-	}
-
 	targets := make([]string, len(dirs))
 	for i, d := range dirs {
 		targets[i] = filepath.Join(d, name)
 	}
+	if !req.Force {
+		for i, d := range dirs {
+			if exists(targets[i]) && !slices.Contains(prevDirs, d) {
+				return lock.Entry{}, fmt.Errorf("%w: %s", ErrConflict, targets[i])
+			}
+		}
+	}
+
 	if err := replaceDirs(req.Skill.Dir, targets); err != nil {
 		return lock.Entry{}, err
 	}
@@ -446,6 +445,14 @@ type Found struct {
 	Dirs []string
 }
 
+// CheckDirs returns an error if the skill has no directories.
+func (f Found) CheckDirs() error {
+	if len(f.Dirs) == 0 {
+		return fmt.Errorf("skill %s has no directories", f.Name)
+	}
+	return nil
+}
+
 // License resolves the license of an unmanaged skill from its first
 // directory alone; the repository it came from is unknown. It reads the
 // directory each time, so callers only ask for skills they show.
@@ -593,8 +600,8 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 	if err := lock.ValidateName(f.Name); err != nil {
 		return lock.Entry{}, err
 	}
-	if len(f.Dirs) == 0 {
-		return lock.Entry{}, fmt.Errorf("skill %s has no directories", f.Name)
+	if err := f.CheckDirs(); err != nil {
+		return lock.Entry{}, err
 	}
 	if _, ok := in.Lock.Get(f.Name); ok {
 		return lock.Entry{}, fmt.Errorf("%w: %s is already managed", ErrConflict, f.Name)
