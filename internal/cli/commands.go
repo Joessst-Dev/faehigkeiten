@@ -134,7 +134,7 @@ Tracking modes:
 				// resolving a version does; keeping a pin does not.
 				refreshed = refreshed || (v != "" && v != app.Latest)
 				req.Agents, req.Tracking, req.Force = targets, tracking, force
-				noteTracking(cmd.ErrOrStderr(), &req, s, v)
+				applyTracking(cmd.ErrOrStderr(), &req, s, v)
 				e, err := in.Install(req)
 				if err != nil {
 					return err
@@ -177,9 +177,10 @@ func parseTrack(s string) (lock.Tracking, error) {
 	return lock.ParseTracking(s)
 }
 
-// noteTracking tells the user when a pin or a missing version overrides the
-// requested tracking of req; v is the version selector of s.
-func noteTracking(w io.Writer, req *install.Request, s skill.Skill, v string) {
+// applyTracking falls back to hash tracking in req when s has no version and
+// tells the user when a pin or that fallback overrides the requested
+// tracking; v is the version selector of s.
+func applyTracking(w io.Writer, req *install.Request, s skill.Skill, v string) {
 	if req.Pinned {
 		if v == "" {
 			fmt.Fprintf(w, "%s is %s and stays there (install %s@latest to unpin it)\n", s.Name, install.PinLabel(req.Skill.Version), s.Name)
@@ -327,11 +328,7 @@ SKILL.md.`,
 				if ref != "" {
 					return errors.New("--ref needs a source")
 				}
-				t, err := scope.target(a)
-				if err != nil {
-					return err
-				}
-				in, err := a.Installer(t)
+				in, err := scope.installer(a)
 				if err != nil {
 					return err
 				}
@@ -780,11 +777,7 @@ reported.`,
 			if err != nil {
 				return err
 			}
-			t, err := scope.target(a)
-			if err != nil {
-				return err
-			}
-			in, err := a.Installer(t)
+			in, err := scope.installer(a)
 			if err != nil {
 				return err
 			}

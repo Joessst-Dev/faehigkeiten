@@ -266,22 +266,20 @@ func (r *Resolver) Upstream(ctx context.Context, src, ref, skillPath, name strin
 	if err != nil {
 		return nil, nil, err
 	}
-	want := skillPath
 	if skillPath != "" {
 		for _, s := range skills {
 			if s.Path == strings.Trim(skillPath, "/") {
 				return co, &s, nil
 			}
 		}
-	} else {
-		want = name
-		for _, s := range skills {
-			if install.DirName(s.Name) == name || path.Base(s.Path) == name {
-				return co, &s, nil
-			}
+		return nil, nil, fmt.Errorf("skill %q not found in %s", skillPath, source.DisplayName(co.URL))
+	}
+	for _, s := range skills {
+		if install.DirName(s.Name) == name || path.Base(s.Path) == name {
+			return co, &s, nil
 		}
 	}
-	return nil, nil, fmt.Errorf("skill %q not found in %s", want, source.DisplayName(co.URL))
+	return nil, nil, fmt.Errorf("skill %q not found in %s", name, source.DisplayName(co.URL))
 }
 
 // Resolution is the outcome of resolving one skill.

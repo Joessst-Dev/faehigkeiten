@@ -134,7 +134,7 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 		return r
 	}
 	before := x.idx
-	x.adopt(cached, req.repos)
+	x.useCached(cached, req.repos)
 	todo, full := x.plan(req)
 	if len(todo) == 0 && x.idx == x.saved {
 		// Only signal a change when there is one, so pollers do not redo
@@ -153,9 +153,9 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 	return r
 }
 
-// adopt sets x.idx to cached, or to an empty, stale index without one, unless
-// an index is already loaded. x.mu must be held.
-func (x *Indexer) adopt(cached *Index, repos []Repo) {
+// useCached sets x.idx to cached, or to an empty, stale index without one,
+// unless an index is already loaded. x.mu must be held.
+func (x *Indexer) useCached(cached *Index, repos []Repo) {
 	if x.idx != nil {
 		return
 	}
