@@ -446,15 +446,15 @@ func (idx *Index) Save(p string) error {
 		return err
 	}
 	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(data)
-	if err == nil {
-		err = tmp.Chmod(0o644)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
 	}
-	// Close always; a write or chmod error takes precedence over its error.
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
 	}
-	if err != nil {
+	if err := tmp.Close(); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), p)
