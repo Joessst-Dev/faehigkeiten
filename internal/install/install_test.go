@@ -456,4 +456,112 @@ var _ = Describe("Installer", func() {
 			Expect(err).To(HaveOccurred())
 		})
 	})
+
+	Describe("Retrack", func() {
+		installAs := func(s skill.Skill, t lock.Tracking) lock.Entry {
+			e, err := in.Install(install.Request{Skill: s, Checkout: co, Agents: []agent.Agent{claude}, Tracking: t})
+			Expect(err).NotTo(HaveOccurred())
+			return e
+		}
+
+		It("switches between version and hash and keeps the content hash", func() {
+			installed := installAs(versioned, lock.TrackVersion)
+			e, changed, err := in.Retrack("pdf", lock.TrackHash)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue())
+			Expect(e.Tracking).To(Equal(lock.TrackHash))
+			Expect(e.Version).To(Equal("1.0.0"), "kept to restore version tracking")
+			Expect(e.Hash).To(Equal(installed.Hash))
+			Expect(e.InstalledAt).To(Equal(installed.InstalledAt))
+			got, _ := lf.Get("pdf")
+			Expect(got).To(Equal(e))
+
+			e, changed, err = in.Retrack("pdf", lock.TrackVersion)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeTrue())
+			Expect(e.Version).To(Equal("1.0.0"))
+			Expect(e.Hash).To(Equal(installed.Hash))
+
+			_, changed, err = in.Retrack("pdf", lock.TrackVersion)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(changed).To(BeFalse())
+		})
+
+		It("restores the recorded version rather than reading the installed copy", func() {
+			e := installAs(plain, lock.TrackHash)
+			e.Version = "0.0.0" // as adopting a copy without a version records it
+			lf.Upsert(e)
+			e, _, err := in.Retrack("web", lock.TrackVersion)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.Version).To(Equal("0.0.0"))
+		})
+
+		It("reads the version from the installed copy when none is recorded", func() {
+			installAs(versioned, lock.TrackHash)
+			e, _, err := in.Retrack("pdf", lock.TrackVersion)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.Version).To(Equal("1.0.0"))
+		})
+
+		It("keeps detecting local edits", func() {
+			installAs(versioned, lock.TrackVersion)
+			Expect(os.WriteFile(filepath.Join(project, ".claude", "skills", "pdf", "notes.md"), []byte("mine"), 0o644)).To(Succeed())
+			e, _, err := in.Retrack("pdf", lock.TrackHash)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(in.Modified(e)).To(BeTrue())
+		})
+
+		It("hashes the installed copy when the skill was untracked", func() {
+			installAs(plain, lock.TrackNone)
+			e, _, err := in.Retrack("web", lock.TrackHash)
+			Expect(err).NotTo(HaveOccurred())
+			want, _ := skill.Hash(plain.Dir)
+			Expect(e.Hash).To(Equal(want))
+		})
+
+		It("clears version and hash when tracking is turned off", func() {
+			installAs(versioned, lock.TrackVersion)
+			e, _, err := in.Retrack("pdf", lock.TrackNone)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(e.Version).To(BeEmpty())
+			Expect(e.Hash).To(BeEmpty())
+		})
+
+		It("rejects version tracking for skills without a version", func() {
+			installAs(plain, lock.TrackHash)
+			_, _, err := in.Retrack("web", lock.TrackVersion)
+			Expect(err).To(MatchError(ContainSubstring("no version")))
+			e, _ := lf.Get("web")
+			Expect(e.Tracking).To(Equal(lock.TrackHash), "unchanged")
+		})
+
+		It("explains which modes an entry cannot switch to", func() {
+			_, err := in.Install(install.Request{Skill: versioned, Checkout: co, Agents: []agent.Agent{claude}, Pinned: true})
+			Expect(err).NotTo(HaveOccurred())
+			pinned, _ := lf.Get("pdf")
+			_, err = in.Retracked(pinned, lock.TrackVersion)
+			Expect(err).NotTo(HaveOccurred())
+			for _, t := range []lock.Tracking{lock.TrackHash, lock.TrackNone} {
+				_, err = in.Retracked(pinned, t)
+				Expect(err).To(MatchError(ContainSubstring("--unpin")))
+			}
+
+			local := lock.Entry{Name: "mine", Agents: []string{"claude-code"}, Tracking: lock.TrackNone}
+			for _, t := range []lock.Tracking{lock.TrackVersion, lock.TrackHash} {
+				_, err = in.Retracked(local, t)
+				Expect(err).To(MatchError(ContainSubstring("without a source")))
+			}
+
+			_, _, err = in.Retrack("missing", lock.TrackHash)
+			Expect(err).To(MatchError(ContainSubstring("not installed")))
+		})
+
+		It("loads the installed copy", func() {
+			e := installAs(plain, lock.TrackHash)
+			s, err := in.InstalledSkill(e)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(s.Dir).To(Equal(filepath.Join(project, ".claude", "skills", "web")))
+			Expect(s.Name).To(Equal("web"))
+		})
+	})
 })

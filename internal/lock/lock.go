@@ -58,8 +58,10 @@ type Entry struct {
 	Commit   string   `yaml:"commit,omitempty"`
 	Agents   []string `yaml:"agents"`
 	Tracking Tracking `yaml:"tracking"`
-	Version  string   `yaml:"version,omitempty"`
-	Hash     string   `yaml:"hash,omitempty"`
+	// Version is the installed version. It is recorded for version tracking
+	// and kept when a skill is switched to hash tracking.
+	Version string `yaml:"version,omitempty"`
+	Hash    string `yaml:"hash,omitempty"`
 	// Pinned entries were installed at a chosen version and are not updated.
 	Pinned bool `yaml:"pinned,omitempty"`
 	// License is the ID of the skill's license and LicenseFile its license
@@ -78,6 +80,9 @@ type File struct {
 	Skills  []Entry `yaml:"skills"`
 
 	path string
+	// exists records that the file is on disk, so saving keeps it even
+	// when it holds no skills.
+	exists bool
 }
 
 // PathFor returns the lockfile location for a scope.
@@ -107,6 +112,7 @@ func Load(p string) (*File, error) {
 	if err := yaml.Unmarshal(data, f); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", p, err)
 	}
+	f.exists = true
 	if f.Version > currentVersion {
 		return nil, fmt.Errorf("%s has lockfile version %d; please upgrade faehigkeiten", p, f.Version)
 	}
@@ -160,14 +166,32 @@ func hasControl(s string) bool {
 // Path returns where the lockfile is stored.
 func (f *File) Path() string { return f.path }
 
-// Save writes the lockfile, sorted by skill name. An empty lockfile is removed.
+// Exists reports whether the lockfile is on disk.
+func (f *File) Exists() bool { return f.exists }
+
+// Init writes the lockfile even though it holds no skills, so it can be
+// committed before anything is installed. It fails with fs.ErrExist when the
+// file is on disk, also when it was created after the lockfile was loaded.
+func (f *File) Init() error {
+	if f.exists {
+		return fmt.Errorf("%s: %w", f.path, fs.ErrExist)
+	}
+	return f.write(os.O_EXCL)
+}
+
+// Save writes the lockfile, sorted by skill name. An empty lockfile is only
+// written when it is already on disk; once created, the file is kept.
 func (f *File) Save() error {
-	if len(f.Skills) == 0 {
-		err := os.Remove(f.path)
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return err
+	if len(f.Skills) == 0 && !f.exists {
+		return nil
+	}
+	return f.write(os.O_TRUNC)
+}
+
+// write stores the lockfile, opening it with os.O_CREATE|os.O_WRONLY|flag.
+func (f *File) write(flag int) error {
+	if f.Skills == nil {
+		f.Skills = []Entry{} // "skills: []" rather than "skills: null"
 	}
 	slices.SortFunc(f.Skills, func(a, b Entry) int { return strings.Compare(a.Name, b.Name) })
 	data, err := marshal(f)
@@ -178,7 +202,19 @@ func (f *File) Save() error {
 	if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(f.path, append(header, data...), 0o644)
+	out, err := os.OpenFile(f.path, os.O_CREATE|os.O_WRONLY|flag, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = out.Write(append(header, data...))
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	f.exists = true
+	return nil
 }
 
 // Get returns the entry for the named skill.

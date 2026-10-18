@@ -410,6 +410,71 @@ var _ = Describe("TUI", func() {
 		Expect(filepath.Join(project, ".claude", "skills", "beta")).NotTo(BeAnExistingFile())
 	})
 
+	It("changes the tracking mode of an installed skill", func() {
+		addRepo()
+		d.keys("down", "enter", "enter", "enter", "enter") // beta → project → dir → agents
+		d.keys("enter", "enter")                           // tracking (hash) + confirm
+		d.keys("enter", "esc", "esc")
+
+		d.keys("down", "enter") // Installed skills
+		d.keys("c")
+		v := d.view()
+		Expect(v).To(ContainSubstring("How should beta be checked for updates?"))
+		Expect(v).To(ContainSubstring("beta has no version"), "version tracking is offered disabled")
+		d.keys("up", "enter") // the disabled version tracking is not chosen
+		Expect(d.view()).To(ContainSubstring("How should beta be checked for updates?"))
+		d.keys("down", "down", "enter") // Untracked
+		Expect(d.view()).To(ContainSubstring("beta now uses untracked"))
+		e, _ := lockfile().Get("beta")
+		Expect(e.Tracking).To(Equal(lock.TrackNone))
+		Expect(e.Hash).To(BeEmpty())
+
+		d.keys("c", "up", "enter")
+		e, _ = lockfile().Get("beta")
+		Expect(e.Tracking).To(Equal(lock.TrackHash))
+		Expect(e.Hash).NotTo(BeEmpty())
+	})
+
+	It("explains why a pinned skill cannot change its tracking mode", func() {
+		lf := lockfile()
+		lf.Upsert(lock.Entry{Name: "alpha", Source: origin, Path: "skills/alpha", Agents: []string{"claude-code"}, Tracking: lock.TrackVersion, Version: "1.0.0", Pinned: true})
+		Expect(lf.Save()).To(Succeed())
+		d.keys("down", "down", "down", "enter", "c") // Installed skills
+		Expect(d.view()).To(ContainSubstring("unpin it first"))
+		d.keys("down", "enter")
+		e, _ := lockfile().Get("alpha")
+		Expect(e.Tracking).To(Equal(lock.TrackVersion))
+	})
+
+	It("creates the lockfile from the installed skills screen", func() {
+		d.keys("down", "down", "down", "enter") // Installed skills
+		Expect(d.view()).To(ContainSubstring("(not created yet)"))
+		d.keys("i")
+		Expect(d.view()).To(ContainSubstring("created "))
+		Expect(lockfile().Exists()).To(BeTrue())
+		Expect(d.view()).NotTo(ContainSubstring("(not created yet)"))
+	})
+
+	It("keeps a lockfile created elsewhere while the screen was open", func() {
+		d.keys("down", "down", "down", "enter") // Installed skills
+		lf := lockfile()
+		lf.Upsert(lock.Entry{Name: "alpha", Source: origin, Path: "skills/alpha", Agents: []string{"claude-code"}, Tracking: lock.TrackNone})
+		Expect(lf.Save()).To(Succeed())
+		d.keys("i")
+		v := d.view()
+		Expect(v).To(ContainSubstring("already exists"))
+		Expect(v).To(ContainSubstring("alpha"))
+		Expect(lockfile().Skills).To(HaveLen(1))
+	})
+
+	It("does not crash creating a lockfile when it could not be loaded", func() {
+		Expect(os.WriteFile(filepath.Join(project, lock.FileName), []byte("version: 99\n"), 0o644)).To(Succeed())
+		d.keys("down", "down", "down", "enter") // Installed skills
+		Expect(d.view()).To(ContainSubstring("please upgrade"))
+		d.keys("i")
+		Expect(d.view()).To(ContainSubstring("please upgrade"))
+	})
+
 	It("shows and removes skills that were not installed by faehigkeiten", func() {
 		Expect(testutil.WriteFiles(project, map[string]string{
 			".claude/skills/handmade/SKILL.md": testutil.SkillMD("handmade", "Copied manually", ""),

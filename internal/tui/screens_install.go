@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"slices"
 	"strings"
 
@@ -394,7 +395,16 @@ type installedScreen struct {
 	target  install.Target // target the list shows
 	confirm any            // lock.Entry, install.Found or []install.Found awaiting confirmation
 	msg     string
+	msgErr  bool // msg reports a failure
 	err     error
+}
+
+// notify shows msg, or err when it is set.
+func (s *installedScreen) notify(msg string, err error) {
+	s.msg, s.msgErr = msg, err != nil
+	if err != nil {
+		s.msg = err.Error()
+	}
 }
 
 func newInstalledScreen(e *env) *installedScreen {
@@ -411,12 +421,17 @@ func (s *installedScreen) Help() string {
 	if s.confirm != nil {
 		return "y confirm • n cancel"
 	}
+	var init string
+	if s.in != nil && !s.in.Lock.Exists() {
+		init = "i create lockfile • "
+	}
 	if it, ok := s.list.Current(); ok {
 		if _, unmanaged := it.Value.(install.Found); unmanaged {
-			return "space select • a select all • m manage • l license • d remove • u check updates • t change target • / filter"
+			return init + "space select • a select all • m manage • l license • d remove • u check updates • t change target • / filter"
 		}
+		return init + "c change tracking • l license • d remove • u check updates • t change target • / filter"
 	}
-	return "l license • d remove • u check updates • t change target • / filter"
+	return init + "u check updates • t change target • / filter"
 }
 
 func (s *installedScreen) reload() {
@@ -516,10 +531,10 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 			return nil
 		}
 		if err := s.remove(v); err != nil {
-			s.msg = err.Error()
+			s.notify("", err)
 			return nil
 		}
-		s.msg = "removed " + confirmName(v)
+		s.notify("removed "+confirmName(v), nil)
 		s.reload()
 		return nil
 	}
@@ -552,6 +567,26 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 				return push(ls)
 			}
 		}
+	case "c":
+		if it, ok := s.list.Current(); ok {
+			if e, ok := it.Value.(lock.Entry); ok {
+				return push(newTrackingScreen(s.env, s.in, e, func(msg string) { s.notify(msg, nil) }))
+			}
+		}
+	case "i":
+		if s.in == nil || s.in.Lock.Exists() {
+			return nil
+		}
+		switch err := s.in.Lock.Init(); {
+		case errors.Is(err, fs.ErrExist):
+			// Created elsewhere since the list was loaded: show its skills.
+			s.reload()
+			s.notify(s.in.Lock.Path()+" already exists", nil)
+		case err != nil:
+			s.notify("", err)
+		default:
+			s.notify("created "+s.in.Lock.Path(), nil)
+		}
 	case "u":
 		return push(newUpdatesScreen(s.env))
 	case "t":
@@ -564,7 +599,11 @@ func (s *installedScreen) View() string {
 	if s.err != nil {
 		return errStyle.Render(s.err.Error())
 	}
-	v := subtleStyle.Render("lockfile: "+s.in.Lock.Path()) + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4)
+	lockfile := "lockfile: " + s.in.Lock.Path()
+	if !s.in.Lock.Exists() {
+		lockfile += " (not created yet)"
+	}
+	v := subtleStyle.Render(lockfile) + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4)
 	switch c := s.confirm.(type) {
 	case lock.Entry:
 		v += "\n" + warnStyle.Render("Remove "+c.Name+" from all agents? (y/n)")
@@ -586,9 +625,93 @@ func (s *installedScreen) View() string {
 			}
 			v += "\n" + subtleStyle.Render(sel+" • m manage selected • d delete selected")
 		}
-		if s.msg != "" {
+		switch {
+		case s.msg == "":
+		case s.msgErr:
+			v += "\n" + errStyle.Render(s.msg)
+		default:
 			v += "\n" + okStyle.Render(s.msg)
 		}
+	}
+	return v
+}
+
+// ---- tracking mode of an installed skill ----
+
+type trackingScreen struct {
+	env    *env
+	in     *install.Installer
+	entry  lock.Entry
+	list   *pickList
+	err    error
+	onDone func(msg string)
+}
+
+// newTrackingScreen lists every tracking mode; the ones entry cannot switch
+// to are disabled and say why.
+func newTrackingScreen(e *env, in *install.Installer, entry lock.Entry, onDone func(string)) *trackingScreen {
+	items := make([]pickItem, 0, len(install.Trackings))
+	for _, t := range install.Trackings {
+		it := pickItem{Title: trackingLabel(t), Value: t}
+		if next, err := in.Retracked(entry, t); err != nil {
+			it.Disabled, it.Desc = true, err.Error()
+		} else {
+			it.Desc = trackingDesc(t, skill.Skill{Version: next.Version})
+		}
+		if t == entry.Tracking {
+			it.Badge = "current"
+		}
+		items = append(items, it)
+	}
+	l := newPickList(items, false)
+	l.Focus(func(it pickItem) bool { return it.Value == entry.Tracking })
+	return &trackingScreen{env: e, in: in, entry: entry, list: l, onDone: onDone}
+}
+
+func (s *trackingScreen) Init() tea.Cmd { return nil }
+func (s *trackingScreen) Title() string { return s.entry.Name + " tracking" }
+func (s *trackingScreen) Help() string  { return "↑/↓ move • enter select • esc back" }
+
+func (s *trackingScreen) Update(msg tea.Msg) tea.Cmd {
+	k, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return nil
+	}
+	if handled, cmd := s.list.Update(k); handled {
+		return cmd
+	}
+	switch k.String() {
+	case "esc":
+		return pop
+	case "enter":
+		it, ok := s.list.Current()
+		if !ok || it.Disabled {
+			return nil
+		}
+		e, changed, err := s.in.Retrack(s.entry.Name, it.Value.(lock.Tracking))
+		if err == nil && !changed {
+			return pop
+		}
+		if err == nil {
+			err = s.in.Lock.Save()
+		}
+		if err != nil {
+			// Keep the lockfile in memory as it is on disk.
+			s.in.Lock.Upsert(s.entry)
+			s.err = err
+			return nil
+		}
+		s.onDone(e.Name + " now uses " + install.Describe(e))
+		return pop
+	}
+	return nil
+}
+
+func (s *trackingScreen) View() string {
+	v := "How should " + s.entry.Name + " be checked for updates? The installed files stay as they are.\n\n" +
+		s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4)
+	if s.err != nil {
+		v += "\n" + errStyle.Render(s.err.Error())
 	}
 	return v
 }

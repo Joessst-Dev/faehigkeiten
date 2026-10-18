@@ -319,6 +319,77 @@ func (in *Installer) entryDirs(e lock.Entry) ([]string, error) {
 	return dirs, nil
 }
 
+// InstalledSkill loads the first installed copy of e.
+func (in *Installer) InstalledSkill(e lock.Entry) (skill.Skill, error) {
+	dir, err := in.InstalledDir(e)
+	if err != nil {
+		return skill.Skill{}, err
+	}
+	return skill.LoadDir(dir, dir)
+}
+
+// Trackings lists the tracking modes in the order they are offered.
+var Trackings = []lock.Tracking{lock.TrackVersion, lock.TrackHash, lock.TrackNone}
+
+// Retracked returns e as it is recorded after switching it to tracking mode
+// t, or why it cannot switch. Nothing is reinstalled: the recorded content
+// hash is kept, so local edits are still detected, and only computed from the
+// installed copy when the skill was untracked. Switching to hash tracking
+// keeps the recorded version, so version tracking can be restored; without
+// one, the version comes from the installed copy.
+func (in *Installer) Retracked(e lock.Entry, t lock.Tracking) (lock.Entry, error) {
+	switch {
+	case e.Tracking == t:
+		return e, nil
+	case e.Pinned:
+		return lock.Entry{}, fmt.Errorf("%s is %s; unpin it first (faehigkeiten update %s --unpin)", e.Name, PinLabel(e.Version), e.Name)
+	case t == lock.TrackNone:
+		e.Tracking, e.Version, e.Hash = t, "", ""
+		return e, nil
+	case t != lock.TrackVersion && t != lock.TrackHash:
+		return lock.Entry{}, fmt.Errorf("invalid tracking mode %q", t)
+	case e.Source == "":
+		return lock.Entry{}, fmt.Errorf("%s is managed without a source and cannot be tracked for updates", e.Name)
+	}
+	if e.Hash == "" || (t == lock.TrackVersion && e.Version == "") {
+		s, err := in.InstalledSkill(e)
+		if err != nil {
+			return lock.Entry{}, err
+		}
+		if e.Version == "" {
+			e.Version = s.Version
+		}
+		if e.Hash == "" {
+			if e.Hash, err = skill.Hash(s.Dir); err != nil {
+				return lock.Entry{}, err
+			}
+		}
+	}
+	if t == lock.TrackVersion && e.Version == "" {
+		return lock.Entry{}, fmt.Errorf("skill %s has no version; use hash tracking instead", e.Name)
+	}
+	e.Tracking = t
+	return e, nil
+}
+
+// Retrack switches the named skill to tracking mode t as Retracked describes
+// and reports whether its entry changed. The lockfile is not saved.
+func (in *Installer) Retrack(name string, t lock.Tracking) (lock.Entry, bool, error) {
+	e, ok := in.Lock.Get(name)
+	if !ok {
+		return lock.Entry{}, false, fmt.Errorf("skill %s is not installed", name)
+	}
+	if e.Tracking == t {
+		return e, false, nil
+	}
+	e, err := in.Retracked(e, t)
+	if err != nil {
+		return lock.Entry{}, false, err
+	}
+	in.Lock.Upsert(e)
+	return e, true, nil
+}
+
 // License returns the license recorded for an entry.
 func License(e lock.Entry) skill.License {
 	return skill.License{ID: e.License, File: e.LicenseFile}

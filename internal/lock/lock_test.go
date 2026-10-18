@@ -1,6 +1,7 @@
 package lock_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -58,14 +59,51 @@ var _ = Describe("Lockfile", func() {
 		Expect(e.Version).To(Equal("2"))
 	})
 
-	It("deletes the file once the last entry is removed", func() {
+	It("keeps the file once the last entry is removed", func() {
 		f, _ := lock.Load(p)
 		f.Upsert(lock.Entry{Name: "a"})
 		Expect(f.Save()).To(Succeed())
 		Expect(f.Remove("a")).To(BeTrue())
 		Expect(f.Save()).To(Succeed())
+		loaded, err := lock.Load(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(loaded.Exists()).To(BeTrue())
+		Expect(loaded.Skills).To(BeEmpty())
+	})
+
+	It("does not create a file for an empty lockfile", func() {
+		f, _ := lock.Load(p)
+		Expect(f.Exists()).To(BeFalse())
+		Expect(f.Save()).To(Succeed())
 		_, err := os.Stat(p)
 		Expect(os.IsNotExist(err)).To(BeTrue())
+	})
+
+	It("initializes an empty lockfile once", func() {
+		f, _ := lock.Load(p)
+		Expect(f.Init()).To(Succeed())
+		data, err := os.ReadFile(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(string(data)).To(ContainSubstring("skills: []"))
+
+		loaded, err := lock.Load(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(loaded.Exists()).To(BeTrue())
+		Expect(loaded.Skills).To(BeEmpty())
+		Expect(loaded.Init()).To(MatchError(fs.ErrExist))
+		Expect(f.Init()).To(MatchError(fs.ErrExist))
+	})
+
+	It("does not overwrite a lockfile created after loading when initializing", func() {
+		stale, _ := lock.Load(p)
+		f, _ := lock.Load(p)
+		f.Upsert(lock.Entry{Name: "a"})
+		Expect(f.Save()).To(Succeed())
+
+		Expect(stale.Init()).To(MatchError(fs.ErrExist))
+		loaded, err := lock.Load(p)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(loaded.Skills).To(HaveLen(1))
 	})
 
 	It("refuses lockfiles from newer releases", func() {

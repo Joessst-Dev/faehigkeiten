@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -582,6 +583,118 @@ func newRemoveCommand() *cobra.Command {
 		},
 	}
 	scope.register(cmd)
+	return cmd
+}
+
+func newInitCommand() *cobra.Command {
+	var scope scopeFlags
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Create an empty lockfile",
+		Long: `Create an empty lockfile in the project (or the global scope with --global),
+so it can be committed before any skill is installed. Once created, the
+lockfile is kept even when its last skill is removed.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			_, in, err := scope.open()
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if err := in.Lock.Init(); errors.Is(err, fs.ErrExist) {
+				fmt.Fprintf(out, "%s already exists\n", in.Lock.Path())
+				return nil
+			} else if err != nil {
+				return err
+			}
+			fmt.Fprintln(out, "created", in.Lock.Path())
+			if n := len(in.Adoptable()); n > 0 {
+				fmt.Fprintf(out, "%d unmanaged skill(s) found; run \"faehigkeiten adopt --all%s\" to manage them\n", n, scope.args())
+			}
+			return nil
+		},
+	}
+	scope.register(cmd)
+	return cmd
+}
+
+func newTrackCommand() *cobra.Command {
+	var (
+		scope scopeFlags
+		all   bool
+	)
+	cmd := &cobra.Command{
+		Use:   "track <version|hash|none> [skill...]",
+		Short: "Change how installed skills are checked for updates",
+		Long: `Change the tracking mode of installed skills. No files are reinstalled: the
+version is read from the installed copy, and the recorded content hash is
+kept, so local edits are still detected. Skills that were untracked use their
+installed content as the baseline. The next check compares against the new
+mode.
+
+Pinned skills always use version tracking; unpin them first with
+"faehigkeiten update <skill> --unpin". With --all, skills that cannot use the
+mode are skipped and reported.`,
+		Example: `  faehigkeiten track hash pdf
+  faehigkeiten track version --all
+  faehigkeiten track none my-notes`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if all == (len(args) > 1) {
+				return errors.New("name the skills to change or use --all")
+			}
+			mode, err := lock.ParseTracking(args[0])
+			if err != nil {
+				return err
+			}
+			_, in, err := scope.open()
+			if err != nil {
+				return err
+			}
+			names := args[1:]
+			if all {
+				for _, e := range in.Lock.Skills {
+					names = append(names, e.Name)
+				}
+			} else {
+				for _, name := range names {
+					if _, ok := in.Lock.Get(name); !ok {
+						return errNotInstalled(name)
+					}
+				}
+			}
+			// Every skill is switched before anything is reported, so an
+			// error leaves the lockfile unsaved and nothing claimed as done.
+			var lines []string
+			changed := false
+			for _, name := range names {
+				prev, _ := in.Lock.Get(name)
+				e, ok, err := in.Retrack(name, mode)
+				switch {
+				case err != nil && !all:
+					return err
+				case err != nil:
+					fmt.Fprintf(cmd.ErrOrStderr(), "skipping %s: %v\n", name, err)
+				case ok:
+					changed = true
+					lines = append(lines, fmt.Sprintf("%s: %s → %s", name, install.Describe(prev), install.Describe(e)))
+				default:
+					lines = append(lines, fmt.Sprintf("%s already uses %s tracking", name, mode))
+				}
+			}
+			if changed {
+				if err := in.Lock.Save(); err != nil {
+					return err
+				}
+			}
+			for _, l := range lines {
+				fmt.Fprintln(cmd.OutOrStdout(), l)
+			}
+			return nil
+		},
+	}
+	scope.register(cmd)
+	cmd.Flags().BoolVar(&all, "all", false, "change every installed skill")
 	return cmd
 }
 

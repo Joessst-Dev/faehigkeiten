@@ -43,7 +43,7 @@ Run `faehigkeiten` (or `fgk`) without arguments to start the TUI:
   press <kbd>v</kbd> on a skill to install an older version and <kbd>l</kbd> to read its license
 - **Search skills**: type to search the known repositories; <kbd>tab</kbd> switches to skills.sh; <kbd>ctrl+l</kbd> shows the license of a result
 - **Add repository**: any source; it is saved and appears in the repository list
-- **Installed skills**: see and remove what is installed in the current target, including skills that were copied by hand or installed with another tool (marked *not managed*; press <kbd>l</kbd> to read a skill's license, <kbd>m</kbd> to manage one, or select several with <kbd>space</kbd>/<kbd>a</kbd> and press <kbd>m</kbd> to manage or <kbd>d</kbd> to delete them together)
+- **Installed skills**: see and remove what is installed in the current target (press <kbd>c</kbd> to change how a skill is tracked, <kbd>i</kbd> to create the lockfile if there is none yet), including skills that were copied by hand or installed with another tool (marked *not managed*; press <kbd>l</kbd> to read a skill's license, <kbd>m</kbd> to manage one, or select several with <kbd>space</kbd>/<kbd>a</kbd> and press <kbd>m</kbd> to manage or <kbd>d</kbd> to delete them together)
 - **Check for updates**: select and apply available updates; press <kbd>u</kbd> on a pinned skill to unpin and update it
 - **Change target**: switch between a project directory and the global scope
 
@@ -54,6 +54,7 @@ The install wizard asks for the target (project or global), the agents, and the 
 Everything is scriptable too:
 
 ```sh
+fgk init                                                   # create an empty lockfile in the project
 fgk install anthropics/skills --list                     # show skills in a repository
 fgk install anthropics/skills pdf docx                    # install into the current project
 fgk install obra/superpowers --all -g -a claude-code,codex # install globally for two agents
@@ -68,6 +69,8 @@ fgk update                                                 # apply all available
 fgk update --force                                         # …including skills you edited locally
 fgk update pdf --unpin                                     # unpin a skill and update it
 fgk remove pdf
+fgk track hash pdf                                         # switch a skill to hash tracking
+fgk track version --all                                    # …or every installed skill that has a version
 fgk adopt golang-cli                                       # manage a skill installed by hand or another tool
 fgk adopt my-skill --from my-org/skills --track hash       # …from an explicit source
 fgk adopt --all                                            # manage every unmanaged skill in the target
@@ -109,6 +112,21 @@ skills:
 | `version` | skill declares `version` (or `metadata.version`) in its frontmatter | semantic version of upstream is newer |
 | `hash`    | opt-in, mainly for skills without a version | SHA-256 over all files (paths + contents) of the upstream skill differs |
 | `none`    | untracked                | never checked |
+
+`fgk init` creates an empty lockfile so it can be committed before any skill is installed. Once a
+lockfile exists, it is kept even when its last skill is removed.
+
+### Changing the tracking mode
+
+`fgk track <version|hash|none> <skill...>` (or `--all`, or <kbd>c</kbd> on the TUI's installed skills
+screen) changes how installed skills are tracked **without reinstalling them**. The recorded hash of
+the installed content is kept, so local edits are still detected, and switching to `hash` keeps the
+recorded version, so `version` tracking can be restored later; otherwise the version is read from the
+installed `SKILL.md`. Switching an untracked skill to `version` or `hash` takes its current installed
+content as the baseline. Pinned skills always use version tracking; unpin them first. With named
+skills, nothing changes unless every one of them can switch; with `--all`, skills that cannot use the
+mode (for example `version` for a skill without one) are skipped. The TUI shows modes a skill cannot
+switch to greyed out, with the reason.
 
 The lockfile also stores a hash of the installed content of every tracked skill. If you edit an
 installed skill, `check` and the TUI flag it as *locally modified*: `fgk update` skips it with a
