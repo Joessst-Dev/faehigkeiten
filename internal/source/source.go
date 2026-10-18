@@ -204,10 +204,6 @@ func pull(ctx context.Context, dir string) error {
 	return wt.Clean(&git.CleanOptions{Dir: true})
 }
 
-func clone(ctx context.Context, src, ref, dir string) error {
-	return cloneRepo(ctx, src, ref, dir, false, 1)
-}
-
 // fetchRefSpec fetches spec from the clone's origin remote. A depth of 0
 // fetches the full history.
 func fetchRefSpec(ctx context.Context, repo *git.Repository, spec string, depth int) error {
