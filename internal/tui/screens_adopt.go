@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/app"
@@ -63,8 +62,7 @@ type adoptScreen struct {
 	step   adoptStep
 	spin   spinner.Model
 	list   *pickList
-	inputs []textinput.Model
-	focus  int
+	form   form
 	co     *source.Checkout
 	up     *skill.Skill
 	ident  bool
@@ -73,14 +71,7 @@ type adoptScreen struct {
 }
 
 func newAdoptScreen(e *env, in *install.Installer, f install.Found) *adoptScreen {
-	src := newInput()
-	src.Prompt = "source: "
-	src.Placeholder = "owner/repo, https://…, git@…, or ./local/dir"
-	src.Width = 60
-	ref := newInput()
-	ref.Prompt = "branch/tag (optional): "
-	ref.Width = 30
-	return &adoptScreen{env: e, in: in, found: f, spin: newSpinner(), inputs: []textinput.Model{src, ref}}
+	return &adoptScreen{env: e, in: in, found: f, spin: newSpinner(), form: newSourceRefForm()}
 }
 
 func (s *adoptScreen) Title() string { return "Manage " + s.found.Name }
@@ -117,7 +108,7 @@ func (s *adoptScreen) sourceList(cands []app.Candidate) {
 		}
 		desc := c.Entry.Path
 		if c.Entry.Version != "" {
-			desc += " • v" + strings.TrimPrefix(c.Entry.Version, "v")
+			desc += " • " + versionBadge(c.Entry.Version)
 		}
 		items = append(items, pickItem{Title: c.Entry.Repo.Name, Badge: badge, Desc: desc, Value: c})
 	}
@@ -158,11 +149,7 @@ func (s *adoptScreen) pickUpstream(co *source.Checkout, up *skill.Skill) tea.Cmd
 
 func (s *adoptScreen) chooseUpstream(co *source.Checkout, up *skill.Skill, ident bool) {
 	s.co, s.up, s.ident = co, up, ident
-	var items []pickItem
-	for _, t := range install.AvailableTracking(*up) {
-		items = append(items, pickItem{Title: trackingLabel(t), Desc: adoptTrackingDesc(t, s.found, up), Value: t})
-	}
-	s.list = newPickList(items, false)
+	s.list = newPickList(trackingOptions(*up, func(t lock.Tracking) string { return adoptTrackingDesc(t, s.found, up) }), false)
 	s.step = adoptTracking
 }
 
@@ -198,12 +185,7 @@ func (s *adoptScreen) adopt(req install.AdoptRequest) tea.Cmd {
 func (s *adoptScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if s.step != adoptFinding && s.step != adoptLoading {
-			return nil
-		}
-		var cmd tea.Cmd
-		s.spin, cmd = s.spin.Update(msg)
-		return cmd
+		return tick(&s.spin, s.step == adoptFinding || s.step == adoptLoading, msg)
 	case candidatesMsg:
 		// Index errors are not fatal: the user can still enter a source.
 		s.err = msg.err
@@ -216,7 +198,7 @@ func (s *adoptScreen) Update(msg tea.Msg) tea.Cmd {
 			// The Resolver remembers the failure; let a retry fetch again.
 			s.res = s.env.app.NewResolver()
 			s.step = adoptOther
-			return s.inputs[s.focus].Focus()
+			return s.form.Focus()
 		}
 		if msg.up != nil {
 			s.chooseUpstream(msg.co, msg.up, msg.ident)
@@ -268,7 +250,7 @@ func (s *adoptScreen) key(k tea.KeyMsg) tea.Cmd {
 				return s.loadUpstream(v.Entry.Repo.URL, v.Entry.Repo.Ref, v.Entry.Path)
 			case otherRepo:
 				s.step, s.err = adoptOther, nil
-				return s.inputs[s.focus].Focus()
+				return s.form.Focus()
 			case localOnly:
 				return s.adopt(install.AdoptRequest{Found: s.found})
 			}
@@ -276,25 +258,20 @@ func (s *adoptScreen) key(k tea.KeyMsg) tea.Cmd {
 	case adoptOther:
 		switch k.String() {
 		case "esc":
-			s.inputs[s.focus].Blur()
+			s.form.Blur()
 			s.step, s.err = adoptSource, nil
 			return nil
-		case "tab", "shift+tab", "up", "down":
-			s.inputs[s.focus].Blur()
-			s.focus = (s.focus + 1) % len(s.inputs)
-			return s.inputs[s.focus].Focus()
 		case "enter":
-			src, err := source.Normalize(s.inputs[0].Value())
+			// Normalize trims the source, but quotes it untrimmed in errors.
+			src, err := source.Normalize(s.form.inputs[0].Value())
 			if err != nil {
 				s.err = err
 				return nil
 			}
-			s.inputs[s.focus].Blur()
-			return s.loadUpstream(src, strings.TrimSpace(s.inputs[1].Value()), "")
+			s.form.Blur()
+			return s.loadUpstream(src, s.form.value(1), "")
 		}
-		var cmd tea.Cmd
-		s.inputs[s.focus], cmd = s.inputs[s.focus].Update(k)
-		return cmd
+		return s.form.Update(k)
 	case adoptPickSkill:
 		if handled, cmd := s.list.Update(k); handled {
 			return cmd
@@ -302,7 +279,7 @@ func (s *adoptScreen) key(k tea.KeyMsg) tea.Cmd {
 		switch k.String() {
 		case "esc":
 			s.step = adoptOther
-			return s.inputs[s.focus].Focus()
+			return s.form.Focus()
 		case "enter":
 			if it, ok := s.list.Current(); ok {
 				sk := it.Value.(skill.Skill)
@@ -340,18 +317,14 @@ func (s *adoptScreen) View() string {
 	h := s.env.bodyHeight() - 4 - len(s.found.Dirs)
 	switch s.step {
 	case adoptFinding:
-		b.WriteString(s.spin.View())
-		b.WriteString(" looking for the skill in known repositories (the first search indexes them and can take a minute) …")
+		b.WriteString(spinLine(s.spin, "looking for the skill in known repositories (the first search indexes them and can take a minute)"))
 	case adoptLoading:
-		b.WriteString(s.spin.View())
-		b.WriteString(" working …")
+		b.WriteString(spinLine(s.spin, "working"))
 	case adoptSource:
 		b.WriteString("Where does this skill come from?\n\n")
 		b.WriteString(s.list.View(s.env.bodyWidth(), h-2))
 	case adoptOther:
-		b.WriteString(s.inputs[0].View())
-		b.WriteString("\n")
-		b.WriteString(s.inputs[1].View())
+		b.WriteString(s.form.fields())
 	case adoptPickSkill:
 		fmt.Fprintf(&b, "Which skill in %s is it?\n\n", source.DisplayName(s.co.URL))
 		b.WriteString(s.list.View(s.env.bodyWidth(), h-2))
@@ -405,11 +378,21 @@ type (
 	}
 )
 
+// adoptManyStep is the stage adoptManyScreen is in.
+type adoptManyStep int
+
+const (
+	manyFinding adoptManyStep = iota
+	manyReview
+	manyRunning
+	manyDone
+)
+
 type adoptManyScreen struct {
 	env     *env
 	in      *install.Installer
 	found   []install.Found
-	step    adoptStep
+	step    adoptManyStep
 	spin    spinner.Model
 	list    *pickList
 	plans   []adoptPlan
@@ -428,9 +411,9 @@ func (s *adoptManyScreen) Title() string { return fmt.Sprintf("Manage %d skills"
 
 func (s *adoptManyScreen) Help() string {
 	switch s.step {
-	case adoptSource:
+	case manyReview:
 		return "↑/↓ move • enter adopt, then choose missing sources • l adopt, keep the rest local only • esc cancel"
-	case adoptDone:
+	case manyDone:
 		if len(s.queue) > 0 {
 			return "enter choose missing sources • esc done"
 		}
@@ -440,7 +423,7 @@ func (s *adoptManyScreen) Help() string {
 }
 
 func (s *adoptManyScreen) Init() tea.Cmd {
-	s.step = adoptFinding
+	s.step = manyFinding
 	ctx, cancel := context.WithCancel(s.env.ctx)
 	s.cancel = cancel
 	a, found := s.env.app, s.found
@@ -508,7 +491,7 @@ func (s *adoptManyScreen) reviewList() {
 // adopt adopts all resolved skills; unresolved ones are kept local only when
 // local is set and queued for adoptScreen otherwise.
 func (s *adoptManyScreen) adopt(local bool) tea.Cmd {
-	s.step = adoptLoading
+	s.step = manyRunning
 	s.queue = nil
 	var reqs []install.AdoptRequest
 	for _, p := range s.plans {
@@ -534,20 +517,15 @@ func (s *adoptManyScreen) adopt(local bool) tea.Cmd {
 func (s *adoptManyScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if s.step != adoptFinding && s.step != adoptLoading {
-			return nil
-		}
-		var cmd tea.Cmd
-		s.spin, cmd = s.spin.Update(msg)
-		return cmd
+		return tick(&s.spin, s.step == manyFinding || s.step == manyRunning, msg)
 	case plansMsg:
 		s.plans = msg.plans
 		s.reviewList()
-		s.step = adoptSource
+		s.step = manyReview
 		return nil
 	case adoptedManyMsg:
 		s.entries, s.errs = msg.entries, msg.errs
-		s.step = adoptDone
+		s.step = manyDone
 		return nil
 	case tea.KeyMsg:
 		return s.key(msg)
@@ -557,12 +535,12 @@ func (s *adoptManyScreen) Update(msg tea.Msg) tea.Cmd {
 
 func (s *adoptManyScreen) key(k tea.KeyMsg) tea.Cmd {
 	switch s.step {
-	case adoptFinding:
+	case manyFinding:
 		if k.String() == "esc" {
 			s.cancel()
 			return pop
 		}
-	case adoptSource:
+	case manyReview:
 		if handled, cmd := s.list.Update(k); handled {
 			return cmd
 		}
@@ -574,7 +552,7 @@ func (s *adoptManyScreen) key(k tea.KeyMsg) tea.Cmd {
 		case "l":
 			return s.adopt(true)
 		}
-	case adoptDone:
+	case manyDone:
 		switch k.String() {
 		case "enter":
 			if len(s.queue) > 0 {
@@ -592,16 +570,14 @@ func (s *adoptManyScreen) View() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Manage %d skills with faehigkeiten (files stay as they are)\n\n", len(s.found))
 	switch s.step {
-	case adoptFinding:
-		b.WriteString(s.spin.View())
-		b.WriteString(" looking for the skills in known repositories (the first search indexes them and can take a minute) …")
-	case adoptLoading:
-		b.WriteString(s.spin.View())
-		b.WriteString(" working …")
-	case adoptSource:
+	case manyFinding:
+		b.WriteString(spinLine(s.spin, "looking for the skills in known repositories (the first search indexes them and can take a minute)"))
+	case manyRunning:
+		b.WriteString(spinLine(s.spin, "working"))
+	case manyReview:
 		b.WriteString("Only sources identical to your copies are chosen automatically.\n\n")
 		b.WriteString(s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4))
-	case adoptDone:
+	case manyDone:
 		for _, e := range s.entries {
 			b.WriteString(adoptedLine(e))
 			b.WriteString("\n")

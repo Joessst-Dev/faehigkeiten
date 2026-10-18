@@ -59,8 +59,8 @@ func within(root, rel string) (string, error) {
 
 // FoundLicenseText returns the license text of an unmanaged skill.
 func FoundLicenseText(f install.Found) (string, error) {
-	if len(f.Dirs) == 0 {
-		return "", fmt.Errorf("skill %s has no directories", f.Name)
+	if err := f.CheckDirs(); err != nil {
+		return "", err
 	}
 	return LicenseText(f.Dirs[0], f.License())
 }

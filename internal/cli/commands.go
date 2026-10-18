@@ -70,13 +70,7 @@ Tracking modes:
 				printSkills(out, skills)
 				return nil
 			}
-			names := make([]string, len(args)-1)
-			pins := make([]string, len(args)-1)
-			pinned := false
-			for i, arg := range args[1:] {
-				names[i], pins[i] = app.SplitVersion(arg)
-				pinned = pinned || (pins[i] != "" && pins[i] != app.Latest)
-			}
+			names, pins, pinned := parseSelectors(args[1:])
 			if versions {
 				if len(names) != 1 || pins[0] != "" {
 					return errors.New("--versions needs exactly one skill name")
@@ -109,11 +103,9 @@ Tracking modes:
 					return err
 				}
 			}
-			var tracking lock.Tracking
-			if track != "" {
-				if tracking, err = lock.ParseTracking(track); err != nil {
-					return err
-				}
+			tracking, err := parseTrack(track)
+			if err != nil {
+				return err
 			}
 			t, err := scope.target(a)
 			if err != nil {
@@ -142,18 +134,7 @@ Tracking modes:
 				// resolving a version does; keeping a pin does not.
 				refreshed = refreshed || (v != "" && v != app.Latest)
 				req.Agents, req.Tracking, req.Force = targets, tracking, force
-				switch {
-				case req.Pinned && v == "":
-					fmt.Fprintf(cmd.ErrOrStderr(), "%s is %s and stays there (install %s@latest to unpin it)\n", s.Name, install.PinLabel(req.Skill.Version), s.Name)
-					fallthrough
-				case req.Pinned:
-					if tracking != "" && tracking != lock.TrackVersion {
-						fmt.Fprintf(cmd.ErrOrStderr(), "%s is pinned, using version tracking\n", s.Name)
-					}
-				case req.Tracking == lock.TrackVersion && !s.HasVersion():
-					req.Tracking = lock.TrackHash
-					fmt.Fprintf(cmd.ErrOrStderr(), "%s has no version, using hash tracking\n", s.Name)
-				}
+				applyTracking(cmd.ErrOrStderr(), &req, s, v)
 				e, err := in.Install(req)
 				if err != nil {
 					return err
@@ -176,9 +157,54 @@ Tracking modes:
 	return cmd
 }
 
-func printSkills(w io.Writer, skills []skill.Skill) {
+// parseSelectors splits skill[@version] arguments into names and version
+// selectors, and reports whether any selects a specific version.
+func parseSelectors(args []string) (names, pins []string, pinned bool) {
+	names = make([]string, len(args))
+	pins = make([]string, len(args))
+	for i, arg := range args {
+		names[i], pins[i] = app.SplitVersion(arg)
+		pinned = pinned || (pins[i] != "" && pins[i] != app.Latest)
+	}
+	return names, pins, pinned
+}
+
+// parseTrack parses an optional --track value; empty means not given.
+func parseTrack(s string) (lock.Tracking, error) {
+	if s == "" {
+		return "", nil
+	}
+	return lock.ParseTracking(s)
+}
+
+// applyTracking falls back to hash tracking in req when s has no version and
+// tells the user when a pin or that fallback overrides the requested
+// tracking; v is the version selector of s.
+func applyTracking(w io.Writer, req *install.Request, s skill.Skill, v string) {
+	if req.Pinned {
+		if v == "" {
+			fmt.Fprintf(w, "%s is %s and stays there (install %s@latest to unpin it)\n", s.Name, install.PinLabel(req.Skill.Version), s.Name)
+		}
+		if req.Tracking != "" && req.Tracking != lock.TrackVersion {
+			fmt.Fprintf(w, "%s is pinned, using version tracking\n", s.Name)
+		}
+		return
+	}
+	if req.Tracking == lock.TrackVersion && !s.HasVersion() {
+		req.Tracking = lock.TrackHash
+		fmt.Fprintf(w, "%s has no version, using hash tracking\n", s.Name)
+	}
+}
+
+// newTable returns a tabwriter for a table on w with its header written.
+func newTable(w io.Writer, header string) *tabwriter.Writer {
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tVERSION\tLICENSE\tPATH\tDESCRIPTION")
+	fmt.Fprintln(tw, header)
+	return tw
+}
+
+func printSkills(w io.Writer, skills []skill.Skill) {
+	tw := newTable(w, "NAME\tVERSION\tLICENSE\tPATH\tDESCRIPTION")
 	for _, s := range skills {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.Name, dash(s.Version), licenseColumn(s.License.Label()), s.Path, truncate(s.Description, 70))
 	}
@@ -210,8 +236,7 @@ func allPins(skills []skill.Skill, names, versions []string) ([]string, error) {
 
 // printVersions lists versions and marks the one at the tip of the ref.
 func printVersions(w io.Writer, vs []source.Version) {
-	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "VERSION\tCOMMIT\tDATE")
+	tw := newTable(w, "VERSION\tCOMMIT\tDATE")
 	for _, v := range vs {
 		latest := ""
 		if v.Latest {
@@ -247,15 +272,7 @@ func newListCommand() *cobra.Command {
 		Short:   "List installed skills",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			a, err := app.New()
-			if err != nil {
-				return err
-			}
-			t, err := scope.target(a)
-			if err != nil {
-				return err
-			}
-			in, err := a.Installer(t)
+			_, in, err := scope.open()
 			if err != nil {
 				return err
 			}
@@ -265,8 +282,7 @@ func newListCommand() *cobra.Command {
 				fmt.Fprintln(out, "no skills installed")
 				return nil
 			}
-			tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tTRACKING\tLICENSE\tAGENTS\tSOURCE")
+			tw := newTable(out, "NAME\tTRACKING\tLICENSE\tAGENTS\tSOURCE")
 			for _, e := range in.Lock.Skills {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Name, install.Describe(e), licenseColumn(install.License(e).Label()), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
 			}
@@ -312,11 +328,7 @@ SKILL.md.`,
 				if ref != "" {
 					return errors.New("--ref needs a source")
 				}
-				t, err := scope.target(a)
-				if err != nil {
-					return err
-				}
-				in, err := a.Installer(t)
+				in, err := scope.installer(a)
 				if err != nil {
 					return err
 				}
@@ -330,7 +342,7 @@ SKILL.md.`,
 					found := in.Unmanaged()
 					i := slices.IndexFunc(found, func(f install.Found) bool { return f.Name == name })
 					if i < 0 {
-						return fmt.Errorf("skill %s is not installed in this target", name)
+						return errNotInstalled(name)
 					}
 					text, err = app.FoundLicenseText(found[i])
 				}
@@ -361,15 +373,7 @@ locally are flagged, because updating them overwrites those edits.
 Exits with status 1 if any skill could not be checked.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			a, err := app.New()
-			if err != nil {
-				return err
-			}
-			t, err := scope.target(a)
-			if err != nil {
-				return err
-			}
-			in, err := a.Installer(t)
+			a, in, err := scope.open()
 			if err != nil {
 				return err
 			}
@@ -396,8 +400,7 @@ func printStatuses(w io.Writer, sts []update.Status) (available, failed int) {
 		fmt.Fprintln(w, "no tracked skills")
 		return 0, 0
 	}
-	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tTRACKING\tINSTALLED\tLATEST\tSTATUS")
+	tw := newTable(w, "NAME\tTRACKING\tINSTALLED\tLATEST\tSTATUS")
 	for _, s := range sts {
 		var status string
 		if s.Err != nil {
@@ -432,6 +435,11 @@ func describeStatus(s update.Status) string {
 	return notes[0] + " (" + strings.Join(notes[1:], ", ") + ")"
 }
 
+// errNotInstalled reports a skill missing from the lockfile of the target.
+func errNotInstalled(name string) error {
+	return fmt.Errorf("skill %s is not installed in this target", name)
+}
+
 func newUpdateCommand() *cobra.Command {
 	var (
 		scope scopeFlags
@@ -449,15 +457,7 @@ the pin of the named skills and updates them to the latest version.
 
 Exits with status 1 if any skill could not be checked or updated.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := app.New()
-			if err != nil {
-				return err
-			}
-			t, err := scope.target(a)
-			if err != nil {
-				return err
-			}
-			in, err := a.Installer(t)
+			a, in, err := scope.open()
 			if err != nil {
 				return err
 			}
@@ -466,7 +466,7 @@ Exits with status 1 if any skill could not be checked or updated.`,
 			}
 			for _, name := range args {
 				if _, ok := in.Lock.Get(name); !ok {
-					return fmt.Errorf("skill %s is not installed in this target", name)
+					return errNotInstalled(name)
 				}
 			}
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
@@ -475,47 +475,14 @@ Exits with status 1 if any skill could not be checked or updated.`,
 				if len(args) > 0 && !slices.Contains(args, s.Entry.Name) {
 					continue
 				}
-				if s.Err != nil {
-					fmt.Fprintf(errOut, "%s: %v\n", s.Entry.Name, s.Err)
+				switch updateOne(out, errOut, in, s, unpin, force) {
+				case resultUpdated:
+					updated++
+				case resultUnpinned:
+					unpinned++
+				case resultFailed:
 					failed++
-					continue
 				}
-				if s.Entry.Pinned && !unpin {
-					if s.Available {
-						fmt.Fprintf(errOut, "skipping %s: %s (use --unpin to update it)\n", s.Entry.Name, install.PinLabel(s.Entry.Version))
-					}
-					continue
-				}
-				changes := s.Updatable() || (s.Entry.Pinned && s.UnpinChanges())
-				if !changes && !s.Entry.Pinned {
-					continue
-				}
-				if changes && s.Modified && !force {
-					fmt.Fprintf(errOut, "warning: skipping %s: it was modified locally and updating would overwrite your changes (use --force)\n", s.Entry.Name)
-					continue
-				}
-				var e lock.Entry
-				if s.Entry.Pinned {
-					var reinstalled bool
-					e, reinstalled, err = update.Unpin(in, s)
-					if err == nil && !reinstalled {
-						unpinned++
-						fmt.Fprintf(out, "unpinned %s (already at the latest version %s)\n", e.Name, e.Version)
-						continue
-					}
-				} else {
-					e, err = update.Apply(in, s)
-				}
-				if err != nil {
-					fmt.Fprintf(errOut, "%s: %v\n", s.Entry.Name, err)
-					failed++
-					continue
-				}
-				updated++
-				if s.Modified {
-					fmt.Fprintf(errOut, "warning: overwrote local changes to %s\n", e.Name)
-				}
-				fmt.Fprintf(out, "updated %s (%s)\n", e.Name, install.Describe(e))
 			}
 			if updated+unpinned > 0 {
 				if err := in.Lock.Save(); err != nil {
@@ -537,6 +504,62 @@ Exits with status 1 if any skill could not be checked or updated.`,
 	return cmd
 }
 
+// updateResult is what updateOne did with a skill.
+type updateResult int
+
+const (
+	resultSkipped updateResult = iota
+	resultUpdated
+	resultUnpinned
+	resultFailed
+)
+
+// updateOne updates or unpins the skill of s as the flags of the update
+// command ask, reporting on out and errOut.
+func updateOne(out, errOut io.Writer, in *install.Installer, s update.Status, unpin, force bool) updateResult {
+	if s.Err != nil {
+		fmt.Fprintf(errOut, "%s: %v\n", s.Entry.Name, s.Err)
+		return resultFailed
+	}
+	if s.Entry.Pinned && !unpin {
+		if s.Available {
+			fmt.Fprintf(errOut, "skipping %s: %s (use --unpin to update it)\n", s.Entry.Name, install.PinLabel(s.Entry.Version))
+		}
+		return resultSkipped
+	}
+	changes := s.Updatable() || (s.Entry.Pinned && s.UnpinChanges())
+	if !changes && !s.Entry.Pinned {
+		return resultSkipped
+	}
+	if changes && s.Modified && !force {
+		fmt.Fprintf(errOut, "warning: skipping %s: it was modified locally and updating would overwrite your changes (use --force)\n", s.Entry.Name)
+		return resultSkipped
+	}
+	var (
+		e   lock.Entry
+		err error
+	)
+	if s.Entry.Pinned {
+		var reinstalled bool
+		e, reinstalled, err = update.Unpin(in, s)
+		if err == nil && !reinstalled {
+			fmt.Fprintf(out, "unpinned %s (already at the latest version %s)\n", e.Name, e.Version)
+			return resultUnpinned
+		}
+	} else {
+		e, err = update.Apply(in, s)
+	}
+	if err != nil {
+		fmt.Fprintf(errOut, "%s: %v\n", s.Entry.Name, err)
+		return resultFailed
+	}
+	if s.Modified {
+		fmt.Fprintf(errOut, "warning: overwrote local changes to %s\n", e.Name)
+	}
+	fmt.Fprintf(out, "updated %s (%s)\n", e.Name, install.Describe(e))
+	return resultUpdated
+}
+
 func newRemoveCommand() *cobra.Command {
 	var scope scopeFlags
 	cmd := &cobra.Command{
@@ -545,15 +568,7 @@ func newRemoveCommand() *cobra.Command {
 		Short:   "Remove installed skills",
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			a, err := app.New()
-			if err != nil {
-				return err
-			}
-			t, err := scope.target(a)
-			if err != nil {
-				return err
-			}
-			in, err := a.Installer(t)
+			_, in, err := scope.open()
 			if err != nil {
 				return err
 			}
@@ -587,13 +602,12 @@ func newSearchCommand() *cobra.Command {
 			}
 			q := strings.Join(args, " ")
 			out := cmd.OutOrStdout()
-			tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 			if remote {
 				hits, err := a.Remote.Search(cmd.Context(), q, limit)
 				if err != nil {
 					return err
 				}
-				fmt.Fprintln(tw, "NAME\tINSTALLS\tSOURCE")
+				tw := newTable(out, "NAME\tINSTALLS\tSOURCE")
 				for _, h := range hits {
 					fmt.Fprintf(tw, "%s\t%d\t%s\n", h.Name, h.Installs, h.Source)
 				}
@@ -611,7 +625,7 @@ func newSearchCommand() *cobra.Command {
 			if len(hits) > limit {
 				hits = hits[:limit]
 			}
-			fmt.Fprintln(tw, "NAME\tREPO\tVERSION\tLICENSE\tDESCRIPTION")
+			tw := newTable(out, "NAME\tREPO\tVERSION\tLICENSE\tDESCRIPTION")
 			for _, h := range hits {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", h.Name, h.Repo.Name, dash(h.Version), licenseColumn(h.License), truncate(h.Description, 60))
 			}
@@ -678,8 +692,7 @@ func newRepoCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-			fmt.Fprintln(tw, "NAME\tKIND\tURL\tDESCRIPTION")
+			tw := newTable(cmd.OutOrStdout(), "NAME\tKIND\tURL\tDESCRIPTION")
 			for _, r := range registry.Repos(cfg) {
 				kind := "builtin"
 				if r.Custom {
@@ -704,8 +717,7 @@ func newAgentsCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			tw := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 2, 2, ' ', 0)
-			fmt.Fprintln(tw, "ID\tNAME\tPROJECT DIR\tGLOBAL DIR")
+			tw := newTable(cmd.OutOrStdout(), "ID\tNAME\tPROJECT DIR\tGLOBAL DIR")
 			for _, ag := range a.Agents.All() {
 				global := ag.GlobalDir
 				if !filepath.IsAbs(global) {
@@ -761,36 +773,17 @@ reported.`,
 			if err != nil {
 				return err
 			}
-			var tracking lock.Tracking
-			if track != "" {
-				if tracking, err = lock.ParseTracking(track); err != nil {
-					return err
-				}
-			}
-			t, err := scope.target(a)
+			tracking, err := parseTrack(track)
 			if err != nil {
 				return err
 			}
-			in, err := a.Installer(t)
+			in, err := scope.installer(a)
 			if err != nil {
 				return err
 			}
-			var found []install.Found
-			if all {
-				if found = in.Adoptable(); len(found) == 0 {
-					return fmt.Errorf("no unmanaged skills in this target")
-				}
-			} else {
-				for _, name := range args {
-					if slices.ContainsFunc(found, func(f install.Found) bool { return f.Name == name }) {
-						continue
-					}
-					f, err := app.FindUnmanaged(in, name)
-					if err != nil {
-						return err
-					}
-					found = append(found, f)
-				}
+			found, err := collectFound(in, args, all)
+			if err != nil {
+				return err
 			}
 			out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 			var res []app.Resolution
@@ -829,13 +822,7 @@ reported.`,
 			if err != nil {
 				return err
 			}
-			for _, e := range entries {
-				if e.Source == "" {
-					fmt.Fprintf(out, "adopted %s (local only, untracked)\n", e.Name)
-				} else {
-					fmt.Fprintf(out, "adopted %s from %s (%s)\n", e.Name, source.DisplayName(e.Source), install.Describe(e))
-				}
-			}
+			printAdopted(out, entries)
 			if len(errs) > 0 {
 				return fmt.Errorf("%d of %d skill(s) could not be adopted", len(errs), len(found))
 			}
@@ -850,6 +837,40 @@ reported.`,
 	cmd.Flags().BoolVar(&local, "local", false, "manage without a source; no update tracking")
 	cmd.Flags().BoolVar(&all, "all", false, "adopt every unmanaged skill in the target")
 	return cmd
+}
+
+// collectFound returns the unmanaged skills to adopt: every one with all,
+// else the named ones without duplicates.
+func collectFound(in *install.Installer, names []string, all bool) ([]install.Found, error) {
+	if all {
+		found := in.Adoptable()
+		if len(found) == 0 {
+			return nil, fmt.Errorf("no unmanaged skills in this target")
+		}
+		return found, nil
+	}
+	var found []install.Found
+	for _, name := range names {
+		if slices.ContainsFunc(found, func(f install.Found) bool { return f.Name == name }) {
+			continue
+		}
+		f, err := app.FindUnmanaged(in, name)
+		if err != nil {
+			return nil, err
+		}
+		found = append(found, f)
+	}
+	return found, nil
+}
+
+func printAdopted(w io.Writer, entries []lock.Entry) {
+	for _, e := range entries {
+		if e.Source == "" {
+			fmt.Fprintf(w, "adopted %s (local only, untracked)\n", e.Name)
+		} else {
+			fmt.Fprintf(w, "adopted %s from %s (%s)\n", e.Name, source.DisplayName(e.Source), install.Describe(e))
+		}
+	}
 }
 
 // adoptHint adds the commands that resolve a NoSourceError; scope holds the

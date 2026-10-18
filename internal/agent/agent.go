@@ -3,9 +3,10 @@ package agent
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"sync"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/config"
@@ -100,19 +101,9 @@ func build(cfg *config.Config) []Agent {
 		return agents
 	}
 	overrides := cfg.AgentOverrides()
-	ids := make([]string, 0, len(overrides))
-	for id := range overrides {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
+	for _, id := range slices.Sorted(maps.Keys(overrides)) {
 		o := overrides[id]
-		idx := -1
-		for i, a := range agents {
-			if a.ID == id {
-				idx = i
-			}
-		}
+		idx := slices.IndexFunc(agents, func(a Agent) bool { return a.ID == id })
 		if idx < 0 {
 			agents = append(agents, Agent{ID: id, Name: id})
 			idx = len(agents) - 1

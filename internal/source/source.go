@@ -163,22 +163,7 @@ func (m *Manager) Fetch(ctx context.Context, src, ref string, refresh bool) (*Ch
 		}
 		// Fall back to a fresh clone if the incremental update failed.
 	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return nil, err
-	}
-	// A unique temp dir keeps concurrent processes from clobbering each other.
-	tmp, err := os.MkdirTemp(filepath.Dir(dir), "."+filepath.Base(dir)+".tmp-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tmp)
-	if err := clone(ctx, src, ref, tmp); err != nil {
-		return nil, err
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(tmp, dir); err != nil {
+	if err := cloneInto(ctx, src, ref, dir, false, 1); err != nil {
 		return nil, err
 	}
 	return openCheckout(src, dir, ref)
@@ -201,20 +186,7 @@ func pull(ctx context.Context, dir string) error {
 	}
 	branch := head.Name().Short()
 	remoteRef := plumbing.NewRemoteReferenceName("origin", branch)
-	err = newAuthenticator(ctx, remoteURL(repo)).run(func(auth transport.AuthMethod) error {
-		err := repo.FetchContext(ctx, &git.FetchOptions{
-			RefSpecs: []config.RefSpec{config.RefSpec("+" + head.Name().String() + ":" + remoteRef.String())},
-			Depth:    1,
-			Tags:     git.NoTags,
-			Force:    true,
-			Auth:     auth,
-		})
-		if errors.Is(err, git.NoErrAlreadyUpToDate) {
-			return nil
-		}
-		return err
-	})
-	if err != nil {
+	if err := fetchRefSpec(ctx, repo, "+"+head.Name().String()+":"+remoteRef.String(), 1); err != nil {
 		return err
 	}
 	ref, err := repo.Reference(remoteRef, true)
@@ -232,8 +204,43 @@ func pull(ctx context.Context, dir string) error {
 	return wt.Clean(&git.CleanOptions{Dir: true})
 }
 
-func clone(ctx context.Context, src, ref, dir string) error {
-	return cloneRepo(ctx, src, ref, dir, false, 1)
+// fetchRefSpec fetches spec from the clone's origin remote. A depth of 0
+// fetches the full history.
+func fetchRefSpec(ctx context.Context, repo *git.Repository, spec string, depth int) error {
+	return newAuthenticator(ctx, remoteURL(repo)).run(func(auth transport.AuthMethod) error {
+		err := repo.FetchContext(ctx, &git.FetchOptions{
+			RefSpecs: []config.RefSpec{config.RefSpec(spec)},
+			Depth:    depth,
+			Tags:     git.NoTags,
+			Force:    true,
+			Auth:     auth,
+		})
+		if errors.Is(err, git.NoErrAlreadyUpToDate) {
+			return nil
+		}
+		return err
+	})
+}
+
+// cloneInto clones ref of src into a temp dir next to dir and then replaces
+// dir with it.
+func cloneInto(ctx context.Context, src, ref, dir string, bare bool, depth int) error {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		return err
+	}
+	// A unique temp dir keeps concurrent processes from clobbering each other.
+	tmp, err := os.MkdirTemp(filepath.Dir(dir), "."+filepath.Base(dir)+".tmp-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	if err := cloneRepo(ctx, src, ref, tmp, bare, depth); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dir)
 }
 
 // cloneRepo clones the branch or tag ref (the default branch when empty) of
@@ -312,11 +319,16 @@ func openCheckout(src, dir, ref string) (*Checkout, error) {
 	if err != nil {
 		return nil, err
 	}
-	co := &Checkout{URL: src, Ref: head.Name().Short(), Commit: head.Hash().String(), Dir: dir}
+	return &Checkout{URL: src, Ref: headRef(head, ref), Commit: head.Hash().String(), Dir: dir}, nil
+}
+
+// headRef names the checked out ref: the requested ref for a detached HEAD
+// (tag clones), otherwise HEAD's branch.
+func headRef(head *plumbing.Reference, ref string) string {
 	if !head.Name().IsBranch() && ref != "" {
-		co.Ref = ref
+		return ref
 	}
-	return co, nil
+	return head.Name().Short()
 }
 
 // localCheckout uses a local directory in place, recording git metadata when

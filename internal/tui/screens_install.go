@@ -88,15 +88,20 @@ func newWizard(e *env, co *source.Checkout, skills []skill.Skill) *wizardScreen 
 func (w *wizardScreen) trackingItems() []pickItem {
 	if len(w.skills) == 1 {
 		s := w.skills[0]
-		var items []pickItem
-		for _, t := range install.AvailableTracking(s) {
-			items = append(items, pickItem{Title: trackingLabel(t), Desc: trackingDesc(t, s), Value: t})
-		}
-		return items
+		return trackingOptions(s, func(t lock.Tracking) string { return trackingDesc(t, s) })
 	}
 	var items []pickItem
 	for i, p := range policies {
 		items = append(items, pickItem{Title: p.label, Desc: p.desc, Value: i})
+	}
+	return items
+}
+
+// trackingOptions lists the tracking modes available for s, described by desc.
+func trackingOptions(s skill.Skill, desc func(lock.Tracking) string) []pickItem {
+	var items []pickItem
+	for _, t := range install.AvailableTracking(s) {
+		items = append(items, pickItem{Title: trackingLabel(t), Desc: desc(t), Value: t})
 	}
 	return items
 }
@@ -252,12 +257,7 @@ func (w *wizardScreen) run() tea.Cmd {
 func (w *wizardScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if w.step != stepRunning {
-			return nil
-		}
-		var cmd tea.Cmd
-		w.spin, cmd = w.spin.Update(msg)
-		return cmd
+		return tick(&w.spin, w.step == stepRunning, msg)
 	case installDoneMsg:
 		w.step, w.res = stepDone, msg
 		return nil
@@ -360,8 +360,7 @@ func (w *wizardScreen) View() string {
 		}
 		b.WriteString("\nPress enter to install.")
 	case stepRunning:
-		b.WriteString(w.spin.View())
-		b.WriteString(" installing …")
+		b.WriteString(spinLine(w.spin, "installing"))
 	case stepDone:
 		for _, r := range w.res.results {
 			if r.err != nil {
@@ -661,49 +660,12 @@ func (s *updatesScreen) check() tea.Cmd {
 func (s *updatesScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if s.busy == "" {
-			return nil
-		}
-		var cmd tea.Cmd
-		s.spin, cmd = s.spin.Update(msg)
-		return cmd
+		return tick(&s.spin, s.busy != "", msg)
 	case checkedMsg:
 		s.busy, s.err, s.statuses, s.in = "", msg.err, msg.statuses, msg.in
 		items := make([]pickItem, 0, len(msg.statuses))
 		for i, st := range msg.statuses {
-			it := pickItem{Title: st.Entry.Name, Value: i}
-			if st.Err != nil {
-				it.Disabled, it.Badge, it.Desc = true, "error", st.Err.Error()
-				items = append(items, it)
-				continue
-			}
-			notes := st.Notes()
-			if !st.Entry.Pinned && !st.Available {
-				notes = notes[1:] // "up to date" is in the description
-			}
-			it.Badge = strings.Join(notes, " • ")
-			if st.Available {
-				it.Desc = fmt.Sprintf("%s: %s → %s", st.Entry.Tracking, short(st.Current), short(st.Latest))
-			} else {
-				it.Desc = fmt.Sprintf("%s: %s (up to date)", st.Entry.Tracking, short(st.Current))
-			}
-			switch {
-			case st.Entry.Pinned && st.Available:
-				it.NoCheck = true
-				it.Desc += " • press u to unpin and update"
-			case st.Entry.Pinned:
-				it.NoCheck = true
-				it.Desc += " • press u to unpin"
-			case !st.Available:
-				it.Disabled = true
-			default:
-				// Modified skills are not preselected: updating overwrites the local edits.
-				it.Checked = !st.Modified
-			}
-			if st.Available && st.Modified {
-				it.Desc += " • updating overwrites your local changes"
-			}
-			items = append(items, it)
+			items = append(items, statusItem(i, st))
 		}
 		s.list.SetItems(items)
 		return nil
@@ -751,6 +713,42 @@ func (s *updatesScreen) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
+// statusItem is the list row of st, the i-th status.
+func statusItem(i int, st update.Status) pickItem {
+	it := pickItem{Title: st.Entry.Name, Value: i}
+	if st.Err != nil {
+		it.Disabled, it.Badge, it.Desc = true, "error", st.Err.Error()
+		return it
+	}
+	notes := st.Notes()
+	if !st.Entry.Pinned && !st.Available {
+		notes = notes[1:] // "up to date" is in the description
+	}
+	it.Badge = strings.Join(notes, " • ")
+	if st.Available {
+		it.Desc = fmt.Sprintf("%s: %s → %s", st.Entry.Tracking, short(st.Current), short(st.Latest))
+	} else {
+		it.Desc = fmt.Sprintf("%s: %s (up to date)", st.Entry.Tracking, short(st.Current))
+	}
+	switch {
+	case st.Entry.Pinned && st.Available:
+		it.NoCheck = true
+		it.Desc += " • press u to unpin and update"
+	case st.Entry.Pinned:
+		it.NoCheck = true
+		it.Desc += " • press u to unpin"
+	case !st.Available:
+		it.Disabled = true
+	default:
+		// Modified skills are not preselected: updating overwrites the local edits.
+		it.Checked = !st.Modified
+	}
+	if st.Available && st.Modified {
+		it.Desc += " • updating overwrites your local changes"
+	}
+	return it
+}
+
 // unpin removes the pin of the skill under the cursor and updates it. Local
 // changes are only overwritten after confirmation.
 func (s *updatesScreen) unpin() tea.Cmd {
@@ -772,10 +770,7 @@ func (s *updatesScreen) unpin() tea.Cmd {
 
 func (s *updatesScreen) unpinAt(i int) tea.Cmd {
 	st := s.statuses[i]
-	s.busy = "unpinning"
-	in := s.in
-	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
-		var res appliedMsg
+	return s.runApply("unpinning", func(in *install.Installer, res *appliedMsg) {
 		switch _, updated, err := update.Unpin(in, st); {
 		case err != nil:
 			res.errs = append(res.errs, fmt.Errorf("%s: %w", st.Entry.Name, err))
@@ -784,6 +779,17 @@ func (s *updatesScreen) unpinAt(i int) tea.Cmd {
 		default:
 			res.unpinned = append(res.unpinned, st.Entry.Name)
 		}
+	})
+}
+
+// runApply shows busy while f changes the skills in the background, then
+// saves the lockfile and reports the result.
+func (s *updatesScreen) runApply(busy string, f func(*install.Installer, *appliedMsg)) tea.Cmd {
+	s.busy = busy
+	in := s.in
+	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+		var res appliedMsg
+		f(in, &res)
 		if err := in.Lock.Save(); err != nil {
 			res.errs = append(res.errs, err)
 		}
@@ -807,10 +813,7 @@ func (s *updatesScreen) apply() tea.Cmd {
 	if len(picked) == 0 || s.in == nil {
 		return nil
 	}
-	s.busy = "updating"
-	in := s.in
-	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
-		var res appliedMsg
+	return s.runApply("updating", func(in *install.Installer, res *appliedMsg) {
 		for _, st := range picked {
 			if _, err := update.Apply(in, st); err != nil {
 				res.errs = append(res.errs, fmt.Errorf("%s: %w", st.Entry.Name, err))
@@ -818,11 +821,7 @@ func (s *updatesScreen) apply() tea.Cmd {
 			}
 			res.updated = append(res.updated, st.Entry.Name)
 		}
-		if err := in.Lock.Save(); err != nil {
-			res.errs = append(res.errs, err)
-		}
-		return res
-	}))
+	})
 }
 
 func (s *updatesScreen) modifiedUpdates() int {
@@ -837,7 +836,7 @@ func (s *updatesScreen) modifiedUpdates() int {
 
 func (s *updatesScreen) View() string {
 	if s.busy != "" {
-		return s.spin.View() + " " + s.busy + " …"
+		return spinLine(s.spin, s.busy)
 	}
 	if s.err != nil {
 		return errStyle.Render(s.err.Error())

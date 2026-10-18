@@ -56,6 +56,28 @@ func (f *scopeFlags) target(a *app.App) (install.Target, error) {
 	return a.Target(agent.ScopeProject, f.project)
 }
 
+// open creates the app and the installer of the selected target.
+func (f *scopeFlags) open() (*app.App, *install.Installer, error) {
+	a, err := app.New()
+	if err != nil {
+		return nil, nil, err
+	}
+	in, err := f.installer(a)
+	if err != nil {
+		return nil, nil, err
+	}
+	return a, in, nil
+}
+
+// installer returns the installer of the selected target.
+func (f *scopeFlags) installer(a *app.App) (*install.Installer, error) {
+	t, err := f.target(a)
+	if err != nil {
+		return nil, err
+	}
+	return a.Installer(t)
+}
+
 // NewRootCommand builds the command tree.
 func NewRootCommand(info BuildInfo) *cobra.Command {
 	root := &cobra.Command{

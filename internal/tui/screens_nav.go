@@ -22,6 +22,30 @@ func newSpinner() spinner.Model {
 	return s
 }
 
+// tick advances sp while active; otherwise it lets the spinner stop.
+func tick(sp *spinner.Model, active bool, msg spinner.TickMsg) tea.Cmd {
+	if !active {
+		return nil
+	}
+	var cmd tea.Cmd
+	*sp, cmd = sp.Update(msg)
+	return cmd
+}
+
+// spinLine renders sp in front of text, which is still in progress.
+func spinLine(sp spinner.Model, text string) string {
+	return sp.View() + " " + text + " …"
+}
+
+// listWithMsg renders l above msg, if any.
+func listWithMsg(e *env, l *pickList, msg string) string {
+	v := l.View(e.bodyWidth(), e.bodyHeight()-1)
+	if msg != "" {
+		v += "\n" + warnStyle.Render(msg)
+	}
+	return v
+}
+
 // ---- menu ----
 
 type menuScreen struct {
@@ -274,11 +298,7 @@ func (s *reposScreen) Update(msg tea.Msg) tea.Cmd {
 			s.msg = "builtin repositories cannot be removed"
 			return nil
 		}
-		err := commit(s.env, func(cfg *config.Config) error {
-			cfg.RemoveRepo(r.URL)
-			return nil
-		})
-		if err != nil {
+		if err := removeRepo(s.env, r.URL); err != nil {
 			s.msg = err.Error()
 			return nil
 		}
@@ -295,13 +315,7 @@ func (s *reposScreen) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (s *reposScreen) View() string {
-	v := s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-1)
-	if s.msg != "" {
-		v += "\n" + warnStyle.Render(s.msg)
-	}
-	return v
-}
+func (s *reposScreen) View() string { return listWithMsg(s.env, s.list, s.msg) }
 
 // ---- add repository ----
 
@@ -311,11 +325,16 @@ type addRepoScreen struct {
 }
 
 func newAddRepoScreen(e *env) *addRepoScreen {
+	return &addRepoScreen{env: e, form: newSourceRefForm()}
+}
+
+// newSourceRefForm asks for a repository and an optional branch or tag.
+func newSourceRefForm() form {
 	src := formInput("source: ", "", "owner/repo, https://…, git@…, or ./local/dir")
 	src.Width = 60
 	ref := formInput("branch/tag (optional): ", "", "")
 	ref.Width = 30
-	return &addRepoScreen{env: e, form: form{inputs: []textinput.Model{src, ref}}}
+	return form{inputs: []textinput.Model{src, ref}}
 }
 
 func (s *addRepoScreen) Init() tea.Cmd { return s.form.Focus() }

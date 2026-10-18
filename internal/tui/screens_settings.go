@@ -117,6 +117,14 @@ func commit(e *env, change func(*config.Config) error) error {
 	return nil
 }
 
+// removeRepo removes the repository with the given URL from the configuration.
+func removeRepo(e *env, url string) error {
+	return commit(e, func(cfg *config.Config) error {
+		cfg.RemoveRepo(url)
+		return nil
+	})
+}
+
 // installedFor returns the skills installed for agent id in the current
 // target and globally. Other projects are not checked.
 func installedFor(e *env, id string) []string {
@@ -189,9 +197,7 @@ func (s *defaultAgentsScreen) Update(msg tea.Msg) tea.Cmd {
 	case "esc":
 		return pop
 	case "c":
-		for _, i := range s.list.visible {
-			s.list.items[i].Checked = false
-		}
+		s.list.SetVisibleChecked(false)
 	case "enter":
 		var ids []string
 		for _, it := range s.list.Checked() {
@@ -362,6 +368,7 @@ type form struct {
 }
 
 func (f *form) Focus() tea.Cmd { return f.inputs[f.focus].Focus() }
+func (f *form) Blur()          { f.inputs[f.focus].Blur() }
 
 func (f *form) value(i int) string { return strings.TrimSpace(f.inputs[i].Value()) }
 
@@ -375,7 +382,7 @@ func (f *form) Update(k tea.KeyMsg) tea.Cmd {
 		d = -1
 	}
 	if d != 0 {
-		f.inputs[f.focus].Blur()
+		f.Blur()
 		f.focus = (f.focus + d + len(f.inputs)) % len(f.inputs)
 		return f.Focus()
 	}
@@ -385,15 +392,20 @@ func (f *form) Update(k tea.KeyMsg) tea.Cmd {
 }
 
 func (f *form) View(intro string) string {
-	lines := make([]string, len(f.inputs))
-	for i, in := range f.inputs {
-		lines[i] = in.View()
-	}
-	v := intro + "\n\n" + strings.Join(lines, "\n")
+	v := intro + "\n\n" + f.fields()
 	if f.err != nil {
 		v += "\n\n" + errStyle.Render(f.err.Error())
 	}
 	return v
+}
+
+// fields renders the inputs, one per line.
+func (f *form) fields() string {
+	lines := make([]string, len(f.inputs))
+	for i, in := range f.inputs {
+		lines[i] = in.View()
+	}
+	return strings.Join(lines, "\n")
 }
 
 func formInput(prompt, value, placeholder string) textinput.Model {
@@ -629,12 +641,7 @@ func (s *settingsReposScreen) Update(msg tea.Msg) tea.Cmd {
 		if !ok {
 			return nil
 		}
-		r := it.Value.(config.Repo)
-		err := commit(s.env, func(cfg *config.Config) error {
-			cfg.RemoveRepo(r.URL)
-			return nil
-		})
-		if err != nil {
+		if err := removeRepo(s.env, it.Value.(config.Repo).URL); err != nil {
 			s.msg = err.Error()
 			return nil
 		}
@@ -644,13 +651,7 @@ func (s *settingsReposScreen) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-func (s *settingsReposScreen) View() string {
-	v := s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-1)
-	if s.msg != "" {
-		v += "\n" + warnStyle.Render(s.msg)
-	}
-	return v
-}
+func (s *settingsReposScreen) View() string { return listWithMsg(s.env, s.list, s.msg) }
 
 // ---- repository form ----
 

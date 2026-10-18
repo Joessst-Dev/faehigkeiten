@@ -137,41 +137,34 @@ func (r *Resolver) Load(ctx context.Context, src, ref string) (*source.Checkout,
 	return l.co, l.skills, err
 }
 
-// Hash returns skill.Hash of dir, once per directory.
-func (r *Resolver) Hash(dir string) (string, error) {
+// hash returns skill.Hash of dir, once per directory.
+func (r *Resolver) hash(dir string) (string, error) {
 	return r.hashes.get(context.Background(), dir, func() (string, error) { return skill.Hash(dir) })
 }
 
 // Identical reports whether the skill directories a and b have the same
 // content. Errors count as different.
 func (r *Resolver) Identical(a, b string) bool {
-	ha, err := r.Hash(a)
+	ha, err := r.hash(a)
 	if err != nil {
 		return false
 	}
-	hb, err := r.Hash(b)
+	hb, err := r.hash(b)
 	return err == nil && ha == hb
-}
-
-func checkDirs(f install.Found) error {
-	if len(f.Dirs) == 0 {
-		return fmt.Errorf("skill %s has no directories", f.Name)
-	}
-	return nil
 }
 
 // Candidates looks up skills with the same name as f in the known
 // repositories. Identical copies come first, then repositories in registry
 // order (user repositories, then by popularity).
 func (r *Resolver) Candidates(ctx context.Context, f install.Found) ([]Candidate, error) {
-	if err := checkDirs(f); err != nil {
+	if err := f.CheckDirs(); err != nil {
 		return nil, err
 	}
 	idx, order, err := r.index(ctx)
 	if err != nil {
 		return nil, err
 	}
-	local, err := r.Hash(f.Dirs[0])
+	local, err := r.hash(f.Dirs[0])
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +179,7 @@ func (r *Resolver) Candidates(ctx context.Context, f install.Found) ([]Candidate
 				if s.Path != e.Path {
 					continue
 				}
-				if h, err := r.Hash(s.Dir); err == nil {
+				if h, err := r.hash(s.Dir); err == nil {
 					c.Identical = h == local
 				}
 				break
@@ -208,7 +201,7 @@ func (r *Resolver) Candidates(ctx context.Context, f install.Found) ([]Candidate
 // hash tracking; callers can compare req.Tracking with opts.Tracking. An empty
 // Tracking becomes install.DefaultAdoptTracking.
 func (r *Resolver) ResolveAdopt(ctx context.Context, f install.Found, opts AdoptOptions) (install.AdoptRequest, error) {
-	if err := checkDirs(f); err != nil {
+	if err := f.CheckDirs(); err != nil {
 		return install.AdoptRequest{}, err
 	}
 	src, ref, p := opts.From, opts.Ref, opts.Path
@@ -236,12 +229,12 @@ func (r *Resolver) ResolveAdopt(ctx context.Context, f install.Found, opts Adopt
 		// The candidate check above used the repository's own ref and only the
 		// first copy; this compares what is actually tracked with every copy,
 		// since an update replaces them all, and covers explicit sources.
-		upHash, err := r.Hash(up.Dir)
+		upHash, err := r.hash(up.Dir)
 		if err != nil {
 			return install.AdoptRequest{}, err
 		}
 		for _, d := range f.Dirs {
-			local, err := r.Hash(d)
+			local, err := r.hash(d)
 			if err != nil {
 				return install.AdoptRequest{}, err
 			}
@@ -273,23 +266,20 @@ func (r *Resolver) Upstream(ctx context.Context, src, ref, skillPath, name strin
 	if err != nil {
 		return nil, nil, err
 	}
-	for _, s := range skills {
-		if skillPath != "" && s.Path == strings.Trim(skillPath, "/") {
-			return co, &s, nil
-		}
-	}
-	if skillPath == "" {
+	if skillPath != "" {
 		for _, s := range skills {
-			if install.DirName(s.Name) == name || path.Base(s.Path) == name {
+			if s.Path == strings.Trim(skillPath, "/") {
 				return co, &s, nil
 			}
 		}
+		return nil, nil, fmt.Errorf("skill %q not found in %s", skillPath, source.DisplayName(co.URL))
 	}
-	want := skillPath
-	if want == "" {
-		want = name
+	for _, s := range skills {
+		if install.DirName(s.Name) == name || path.Base(s.Path) == name {
+			return co, &s, nil
+		}
 	}
-	return nil, nil, fmt.Errorf("skill %q not found in %s", want, source.DisplayName(co.URL))
+	return nil, nil, fmt.Errorf("skill %q not found in %s", name, source.DisplayName(co.URL))
 }
 
 // Resolution is the outcome of resolving one skill.

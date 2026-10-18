@@ -37,7 +37,7 @@ type Skill struct {
 	// Dir is the absolute directory on disk.
 	Dir string
 	// License is the license of the skill. Parse only records the license
-	// field of the frontmatter; ResolveLicense completes it.
+	// field of the frontmatter; LoadDir and Discover complete it.
 	License License
 }
 
@@ -121,11 +121,8 @@ func Parse(data []byte) (Skill, error) {
 }
 
 func scalar(v any) string {
-	if v == nil {
-		return ""
-	}
 	switch v.(type) {
-	case map[string]any, []any:
+	case nil, map[string]any, []any:
 		return ""
 	}
 	return strings.TrimSpace(Clean(fmt.Sprint(v)))
@@ -152,16 +149,11 @@ func extractFrontmatter(data []byte) ([]byte, bool) {
 
 var skippedDirs = map[string]bool{".git": true, "node_modules": true}
 
-// Discover walks root and returns every skill directory below it, sorted by path.
-// Skills nested inside another skill directory are not reported separately.
-func Discover(root string) ([]Skill, error) {
-	root, err := filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	var skills []Skill
-	licenses := licenseFinder{}
-	err = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+// walkRegularFiles walks root and calls fn for every regular file, skipping
+// the directories in skippedDirs below root. As with filepath.WalkDir,
+// filepath.SkipDir from fn skips the rest of the file's directory.
+func walkRegularFiles(root string, fn func(p string, d fs.DirEntry) error) error {
+	return filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -171,9 +163,26 @@ func Discover(root string) ([]Skill, error) {
 			}
 			return nil
 		}
-		// A symlinked SKILL.md in an untrusted repository could point anywhere
-		// on disk, and symlinks are not copied on install anyway.
-		if d.Name() != FileName || !d.Type().IsRegular() {
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		return fn(p, d)
+	})
+}
+
+// Discover walks root and returns every skill directory below it, sorted by path.
+// Skills nested inside another skill directory are not reported separately.
+func Discover(root string) ([]Skill, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	var skills []Skill
+	licenses := licenseFinder{}
+	// A symlinked SKILL.md in an untrusted repository could point anywhere
+	// on disk, and symlinks are not copied on install anyway.
+	err = walkRegularFiles(root, func(p string, d fs.DirEntry) error {
+		if d.Name() != FileName {
 			return nil
 		}
 		s, err := ParseFile(p)
@@ -216,19 +225,7 @@ func Hash(dir string) (string, error) {
 		return "", err
 	}
 	var files []string
-	err = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			if p != dir && skippedDirs[d.Name()] {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
+	err = walkRegularFiles(dir, func(p string, _ fs.DirEntry) error {
 		rel, err := filepath.Rel(dir, p)
 		if err != nil {
 			return err

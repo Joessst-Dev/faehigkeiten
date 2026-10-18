@@ -75,26 +75,25 @@ func (c *Config) UnmarshalYAML(n *yaml.Node) error {
 
 // Dir returns the configuration directory.
 func Dir() (string, error) {
-	if d := os.Getenv(EnvConfigDir); d != "" {
-		return d, nil
-	}
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(base, appName), nil
+	return stateDir(EnvConfigDir, os.UserConfigDir)
 }
 
 // CacheDir returns the cache directory used for cloned repositories and indexes.
 func CacheDir() (string, error) {
-	if d := os.Getenv(EnvCacheDir); d != "" {
+	return stateDir(EnvCacheDir, os.UserCacheDir)
+}
+
+// stateDir returns the directory set in the environment variable env, or the
+// application's directory below the one base returns.
+func stateDir(env string, base func() (string, error)) (string, error) {
+	if d := os.Getenv(env); d != "" {
 		return d, nil
 	}
-	base, err := os.UserCacheDir()
+	dir, err := base()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, appName), nil
+	return filepath.Join(dir, appName), nil
 }
 
 // Path returns the location of the config file.
@@ -112,11 +111,11 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return LoadFile(p)
+	return loadFile(p)
 }
 
-// LoadFile reads the config from p; a missing file yields an empty config.
-func LoadFile(p string) (*Config, error) {
+// loadFile reads the config from p; a missing file yields an empty config.
+func loadFile(p string) (*Config, error) {
 	cfg := &Config{}
 	data, err := os.ReadFile(p)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -137,11 +136,11 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	return c.SaveFile(p)
+	return c.saveFile(p)
 }
 
-// SaveFile writes the config to p.
-func (c *Config) SaveFile(p string) error {
+// saveFile writes the config to p.
+func (c *Config) saveFile(p string) error {
 	data, err := marshal(c)
 	if err != nil {
 		return err

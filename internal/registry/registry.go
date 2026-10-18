@@ -121,11 +121,16 @@ func (r Repo) key() string {
 func (idx *Index) WithScanned(repos ...Repo) *Index {
 	out := idx.Clone()
 	for _, r := range repos {
-		if _, ok := out.Scanned[r.key()]; !ok {
-			out.Scanned[r.key()] = out.BuiltAt
-		}
+		out.markScanned(r)
 	}
 	return out
+}
+
+// markScanned records r as indexed at BuiltAt unless it already is.
+func (idx *Index) markScanned(r Repo) {
+	if _, ok := idx.Scanned[r.key()]; !ok {
+		idx.Scanned[r.key()] = idx.BuiltAt
+	}
 }
 
 // finishLegacy completes the conversion of a cache written before Scanned
@@ -144,9 +149,7 @@ func (idx *Index) finishLegacy(repos []Repo) {
 		if _, failed := idx.Errors[r.URL]; !failed || indexed[r.URL] {
 			continue
 		}
-		if _, ok := idx.Scanned[r.key()]; !ok {
-			idx.Scanned[r.key()] = idx.BuiltAt
-		}
+		idx.markScanned(r)
 	}
 	idx.legacy = false
 }
@@ -154,6 +157,16 @@ func (idx *Index) finishLegacy(repos []Repo) {
 // NewIndex returns an empty index.
 func NewIndex() *Index {
 	return &Index{Format: IndexFormat, BuiltAt: time.Now().UTC(), Errors: map[string]string{}, Scanned: map[string]time.Time{}}
+}
+
+// initMaps replaces nil maps of idx with empty ones.
+func (idx *Index) initMaps() {
+	if idx.Errors == nil {
+		idx.Errors = map[string]string{}
+	}
+	if idx.Scanned == nil {
+		idx.Scanned = map[string]time.Time{}
+	}
 }
 
 // Fetcher makes a source available on disk.
@@ -196,7 +209,7 @@ func scanAll(ctx context.Context, f Fetcher, repos []Repo, refresh bool, fn func
 		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			entries, err := Scan(ctx, f, r, refresh)
+			entries, err := scan(ctx, f, r, refresh)
 			mu.Lock()
 			defer mu.Unlock()
 			fn(r, entries, err)
@@ -205,8 +218,8 @@ func scanAll(ctx context.Context, f Fetcher, repos []Repo, refresh bool, fn func
 	wg.Wait()
 }
 
-// Scan fetches a single repository and lists its skills.
-func Scan(ctx context.Context, f Fetcher, r Repo, refresh bool) ([]Entry, error) {
+// scan fetches a single repository and lists its skills.
+func scan(ctx context.Context, f Fetcher, r Repo, refresh bool) ([]Entry, error) {
 	co, err := f.Fetch(ctx, r.URL, r.Ref, refresh)
 	if err != nil {
 		return nil, err
@@ -246,12 +259,7 @@ func (idx *Index) merge(r Repo, entries []Entry, err error) {
 // Clone returns a deep copy of idx.
 func (idx *Index) Clone() *Index {
 	out := &Index{Format: idx.Format, BuiltAt: idx.BuiltAt, Entries: slices.Clone(idx.Entries), Errors: maps.Clone(idx.Errors), Scanned: maps.Clone(idx.Scanned)}
-	if out.Errors == nil {
-		out.Errors = map[string]string{}
-	}
-	if out.Scanned == nil {
-		out.Scanned = map[string]time.Time{}
-	}
+	out.initMaps()
 	return out
 }
 
@@ -344,24 +352,7 @@ func (idx *Index) Search(query string) []Entry {
 	}
 	var hits []scored
 	for _, e := range idx.Entries {
-		name := strings.ToLower(e.Name)
-		hay := name + "\n" + strings.ToLower(e.Description) + "\n" + strings.ToLower(e.Repo.Name)
-		score, ok := 0, true
-		for _, t := range terms {
-			switch {
-			case name == t:
-				score += 100
-			case strings.HasPrefix(name, t):
-				score += 50
-			case strings.Contains(name, t):
-				score += 20
-			case strings.Contains(hay, t), licenseMatches(e.License, t):
-				score++
-			default:
-				ok = false
-			}
-		}
-		if ok {
+		if score, ok := matchScore(e, terms); ok {
 			hits = append(hits, scored{e, score})
 		}
 	}
@@ -371,6 +362,28 @@ func (idx *Index) Search(query string) []Entry {
 		out[i] = h.e
 	}
 	return out
+}
+
+// matchScore scores e against the lowercase search terms. ok is false unless
+// every term matches.
+func matchScore(e Entry, terms []string) (score int, ok bool) {
+	name := strings.ToLower(e.Name)
+	hay := name + "\n" + strings.ToLower(e.Description) + "\n" + strings.ToLower(e.Repo.Name)
+	for _, t := range terms {
+		switch {
+		case name == t:
+			score += 100
+		case strings.HasPrefix(name, t):
+			score += 50
+		case strings.Contains(name, t):
+			score += 20
+		case strings.Contains(hay, t), licenseMatches(e.License, t):
+			score++
+		default:
+			return 0, false
+		}
+	}
+	return score, true
 }
 
 // licenseMatches reports whether the search term t names license: the whole
@@ -401,16 +414,13 @@ func LoadIndexAny(p string, ttl time.Duration) (idx *Index, fresh bool, err erro
 	if err := json.Unmarshal(data, idx); err != nil {
 		return nil, false, nil // corrupt cache: rebuild
 	}
-	if idx.Errors == nil {
-		idx.Errors = map[string]string{}
-	}
-	if idx.Scanned == nil {
-		// Caches written before Scanned existed: repositories with entries
-		// were indexed at build time. Errors are keyed by URL without the
-		// ref, so the Indexer marks failed repositories once it knows the
-		// configured refs; see finishLegacy.
-		idx.Scanned = map[string]time.Time{}
-		idx.legacy = true
+	// Caches written before Scanned existed: repositories with entries were
+	// indexed at build time. Errors are keyed by URL without the ref, so the
+	// Indexer marks failed repositories once it knows the configured refs;
+	// see finishLegacy.
+	idx.legacy = idx.Scanned == nil
+	idx.initMaps()
+	if idx.legacy {
 		for _, e := range idx.Entries {
 			idx.Scanned[e.Repo.key()] = idx.BuiltAt
 		}
