@@ -134,21 +134,7 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 		return r
 	}
 	before := x.idx
-	if x.idx == nil {
-		if cached != nil {
-			if cached.legacy {
-				// cached is not published yet, so it may still change. It
-				// differs from the file now, so it is saved.
-				cached.finishLegacy(req.repos)
-			} else {
-				x.saved = cached
-			}
-			x.idx = cached
-		} else {
-			x.idx = NewIndex()
-			x.idx.BuiltAt = time.Time{} // never built: stale
-		}
-	}
+	x.adopt(cached, req.repos)
 	todo, full := x.plan(req)
 	if len(todo) == 0 && x.idx == x.saved {
 		// Only signal a change when there is one, so pollers do not redo
@@ -165,6 +151,27 @@ func (x *Indexer) start(ctx context.Context, refresh bool, progress Progress) *i
 	x.begin(len(todo))
 	go x.build(r, req, todo, full)
 	return r
+}
+
+// adopt sets x.idx to cached, or to an empty, stale index without one, unless
+// an index is already loaded. x.mu must be held.
+func (x *Indexer) adopt(cached *Index, repos []Repo) {
+	if x.idx != nil {
+		return
+	}
+	if cached == nil {
+		x.idx = NewIndex()
+		x.idx.BuiltAt = time.Time{} // never built: stale
+		return
+	}
+	if cached.legacy {
+		// cached is not published yet, so it may still change. It
+		// differs from the file now, so it is saved.
+		cached.finishLegacy(repos)
+	} else {
+		x.saved = cached
+	}
+	x.idx = cached
 }
 
 // plan drops removed repositories and returns the ones to index. full is set

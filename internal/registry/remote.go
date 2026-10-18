@@ -66,8 +66,11 @@ func (r *RemoteSearch) Search(ctx context.Context, query string, limit int) ([]R
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, fmt.Errorf("skills.sh search: %w", err)
 	}
-	for i, h := range body.Skills {
-		body.Skills[i].ID, body.Skills[i].Name, body.Skills[i].Source = skill.Clean(h.ID), skill.Clean(h.Name), skill.Clean(h.Source)
+	for i := range body.Skills {
+		s := &body.Skills[i]
+		s.ID = skill.Clean(s.ID)
+		s.Name = skill.Clean(s.Name)
+		s.Source = skill.Clean(s.Source)
 	}
 	return body.Skills, nil
 }
