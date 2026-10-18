@@ -83,7 +83,19 @@ func (l *pickList) Checked() []pickItem {
 	return out
 }
 
-func (it pickItem) selected() bool { return it.Checked && !it.Disabled && !it.NoCheck }
+func (it pickItem) selected() bool { return it.Checked && it.checkable() }
+
+// checkable reports whether the item can be checked.
+func (it pickItem) checkable() bool { return !it.Disabled && !it.NoCheck }
+
+// SetVisibleChecked checks or unchecks all checkable items the filter shows.
+func (l *pickList) SetVisibleChecked(v bool) {
+	for _, i := range l.visible {
+		if l.items[i].checkable() {
+			l.items[i].Checked = v
+		}
+	}
+}
 
 // HiddenChecked counts the checked items the filter hides.
 func (l *pickList) HiddenChecked() int {
@@ -158,7 +170,7 @@ func (l *pickList) Update(msg tea.KeyMsg) (bool, tea.Cmd) {
 		if !l.multi {
 			return false, nil
 		}
-		if it, ok := l.Current(); ok && !it.Disabled && !it.NoCheck {
+		if it, ok := l.Current(); ok && it.checkable() {
 			it.Checked = !it.Checked
 		}
 	case "a":
@@ -167,15 +179,11 @@ func (l *pickList) Update(msg tea.KeyMsg) (bool, tea.Cmd) {
 		}
 		all := true
 		for _, i := range l.visible {
-			if !l.items[i].Disabled && !l.items[i].NoCheck && !l.items[i].Checked {
+			if l.items[i].checkable() && !l.items[i].Checked {
 				all = false
 			}
 		}
-		for _, i := range l.visible {
-			if !l.items[i].Disabled && !l.items[i].NoCheck {
-				l.items[i].Checked = !all
-			}
-		}
+		l.SetVisibleChecked(!all)
 	case "esc":
 		if l.filter.Value() != "" {
 			l.filter.SetValue("")

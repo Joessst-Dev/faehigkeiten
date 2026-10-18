@@ -67,12 +67,7 @@ func (s *skillsScreen) load(refresh bool) tea.Cmd {
 func (s *skillsScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if !s.loading {
-			return nil
-		}
-		var cmd tea.Cmd
-		s.spin, cmd = s.spin.Update(msg)
-		return cmd
+		return tick(&s.spin, s.loading, msg)
 	case skillsLoadedMsg:
 		s.loading = false
 		if msg.err != nil {
@@ -123,21 +118,27 @@ func (s *skillsScreen) Update(msg tea.Msg) tea.Cmd {
 			if s.co == nil {
 				return nil
 			}
-			var picked []skill.Skill
-			for _, it := range s.list.Checked() {
-				picked = append(picked, it.Value.(skill.Skill))
+			if picked := s.pickedSkills(); len(picked) > 0 {
+				return push(newWizard(s.env, s.co, picked))
 			}
-			if len(picked) == 0 {
-				it, ok := s.list.Current()
-				if !ok {
-					return nil
-				}
-				picked = []skill.Skill{it.Value.(skill.Skill)}
-			}
-			return push(newWizard(s.env, s.co, picked))
 		}
 	}
 	return nil
+}
+
+// pickedSkills returns the checked skills, or the one under the cursor when
+// none are checked.
+func (s *skillsScreen) pickedSkills() []skill.Skill {
+	var picked []skill.Skill
+	for _, it := range s.list.Checked() {
+		picked = append(picked, it.Value.(skill.Skill))
+	}
+	if len(picked) == 0 {
+		if it, ok := s.list.Current(); ok {
+			picked = []skill.Skill{it.Value.(skill.Skill)}
+		}
+	}
+	return picked
 }
 
 // withLicense appends a license label to a list item description.
@@ -160,7 +161,7 @@ func versionBadge(v string) string {
 
 func (s *skillsScreen) View() string {
 	if s.loading {
-		return s.spin.View() + " fetching " + s.src + " …"
+		return spinLine(s.spin, "fetching "+s.src)
 	}
 	if s.err != nil {
 		return errStyle.Render("Could not load repository: "+s.err.Error()) + "\n\n" + subtleStyle.Render("press r to retry")
@@ -232,12 +233,7 @@ func (s *versionsScreen) Init() tea.Cmd {
 func (s *versionsScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if s.busy == "" {
-			return nil
-		}
-		var cmd tea.Cmd
-		s.spin, cmd = s.spin.Update(msg)
-		return cmd
+		return tick(&s.spin, s.busy != "", msg)
 	case versionsLoadedMsg:
 		s.busy, s.err = "", msg.err
 		items := make([]pickItem, 0, len(msg.versions))
@@ -311,7 +307,7 @@ func (s *versionsScreen) latestWizard(co *source.Checkout, sk skill.Skill) *wiza
 
 func (s *versionsScreen) View() string {
 	if s.busy != "" {
-		return s.spin.View() + " " + s.busy + " …"
+		return spinLine(s.spin, s.busy)
 	}
 	var b strings.Builder
 	b.WriteString(subtleStyle.Render("Older versions are installed pinned: they are not updated until you unpin them. The latest version removes a pin."))
@@ -448,12 +444,7 @@ func (s *searchScreen) refreshLocal() {
 func (s *searchScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if !s.loading && !s.ist.Building {
-			return nil
-		}
-		var cmd tea.Cmd
-		s.spin, cmd = s.spin.Update(msg)
-		return cmd
+		return tick(&s.spin, s.loading || s.ist.Building, msg)
 	case indexTickMsg:
 		s.polling = false
 		return s.syncIndex(false)
@@ -536,9 +527,9 @@ func (s *searchScreen) View() string {
 	v := s.input.View() + "\n" + subtleStyle.Render("searching "+mode) + "\n\n"
 	switch {
 	case s.loading:
-		v += s.spin.View() + " searching …\n"
+		v += spinLine(s.spin, "searching") + "\n"
 	case s.ist.Building && s.ist.Total > 0 && !s.remote:
-		v += s.spin.View() + fmt.Sprintf(" indexing repositories %d/%d …\n", s.ist.Done, s.ist.Total)
+		v += spinLine(s.spin, fmt.Sprintf("indexing repositories %d/%d", s.ist.Done, s.ist.Total)) + "\n"
 	}
 	if s.err != nil {
 		v += errStyle.Render(s.err.Error()) + "\n"

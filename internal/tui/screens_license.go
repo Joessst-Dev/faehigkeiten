@@ -99,12 +99,7 @@ func (s *licenseScreen) Init() tea.Cmd {
 func (s *licenseScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
-		if !s.loading {
-			return nil
-		}
-		var cmd tea.Cmd
-		s.spin, cmd = s.spin.Update(msg)
-		return cmd
+		return tick(&s.spin, s.loading, msg)
 	case licenseLoadedMsg:
 		s.loading, s.text, s.note, s.err = false, msg.text, msg.note, msg.err
 		s.width = 0
@@ -123,7 +118,7 @@ func (s *licenseScreen) Update(msg tea.Msg) tea.Cmd {
 
 func (s *licenseScreen) View() string {
 	if s.loading {
-		return s.spin.View() + " loading license …"
+		return spinLine(s.spin, "loading license")
 	}
 	if errors.Is(s.err, app.ErrNoLicense) {
 		return subtleStyle.Render(fmt.Sprintf("%s declares no license and has no license file.", s.name))
