@@ -174,7 +174,7 @@ func (m *Model) View() string {
 	if hl := m.top().Help(); strings.HasSuffix(hl, " quit") {
 		help = hl // the screen already explains how to quit
 	} else if hl != "" {
-		help = hl + " • " + help
+		help = fitHelp(hl, help, w-footerStyle.GetHorizontalPadding())
 	}
 	footer := footerStyle.Width(w).MaxWidth(w).MaxHeight(1).Render(help)
 
@@ -185,6 +185,30 @@ func (m *Model) View() string {
 		Render(m.top().View())
 
 	return lipgloss.JoinVertical(lipgloss.Left, header, target, "", body, "", footer)
+}
+
+// fitHelp joins a screen's help hl and the global keys in base into one line
+// of at most width columns. It drops keys from the end of hl, marking the gap
+// with "…", so that base stays visible, unless that leaves less than half the
+// line for hl; then the line is clipped as a whole.
+func fitHelp(hl, base string, width int) string {
+	full := hl + " • " + base
+	if lipgloss.Width(full) <= width {
+		return full
+	}
+	tail := " • … • " + base
+	room := width - lipgloss.Width(tail)
+	if room < width/2 {
+		return full
+	}
+	keys := strings.Split(hl, " • ")
+	for len(keys) > 0 && lipgloss.Width(strings.Join(keys, " • ")) > room {
+		keys = keys[:len(keys)-1]
+	}
+	if len(keys) == 0 {
+		return full
+	}
+	return strings.Join(keys, " • ") + tail
 }
 
 // bodyHeight is the number of lines available to a screen's content.

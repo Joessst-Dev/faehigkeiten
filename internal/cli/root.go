@@ -112,6 +112,7 @@ Run without arguments to start the interactive TUI.`,
 		newAdoptCommand(),
 		newSearchCommand(),
 		newRepoCommand(),
+		newFavouriteCommand(),
 		newAgentsCommand(),
 	)
 	return root

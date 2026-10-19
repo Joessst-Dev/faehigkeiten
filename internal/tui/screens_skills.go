@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/app"
+	"github.com/Joessst-Dev/faehigkeiten/internal/config"
 	"github.com/Joessst-Dev/faehigkeiten/internal/registry"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
 	"github.com/Joessst-Dev/faehigkeiten/internal/source"
@@ -34,6 +35,7 @@ type skillsScreen struct {
 	spin     spinner.Model
 	list     *pickList
 	co       *source.Checkout
+	msg      string
 	err      error
 }
 
@@ -50,7 +52,7 @@ func (s *skillsScreen) Help() string {
 	if s.loading {
 		return ""
 	}
-	return "space select • a all • enter install • v versions • l license • / filter • r refresh"
+	return "space select • a all • enter install • v versions • l license • f favourite • F favourites only • / filter • r refresh"
 }
 
 func (s *skillsScreen) Init() tea.Cmd { return s.load(false) }
@@ -77,7 +79,13 @@ func (s *skillsScreen) Update(msg tea.Msg) tea.Cmd {
 		s.co = msg.co
 		items := make([]pickItem, 0, len(msg.skills))
 		for _, sk := range msg.skills {
-			items = append(items, pickItem{Title: sk.Name, Desc: withLicense(sk.Description, sk.License.Label()), Badge: versionBadge(sk.Version), Value: sk})
+			items = append(items, pickItem{
+				Title:   sk.Name,
+				Desc:    withLicense(sk.Description, sk.License.Label()),
+				Badge:   versionBadge(sk.Version),
+				Starred: s.env.app.Config.IsFavourite(s.co.URL, sk.Path),
+				Value:   sk,
+			})
 		}
 		s.list.SetItems(items)
 		if s.focus != "" {
@@ -102,6 +110,19 @@ func (s *skillsScreen) Update(msg tea.Msg) tea.Cmd {
 			return pop
 		case "r":
 			return s.load(true)
+		case "f":
+			it, ok := s.list.Current()
+			if !ok || s.co == nil {
+				return nil
+			}
+			sk := it.Value.(skill.Skill)
+			msg, err := toggleStar(s.env, s.list, it, config.Favourite{Name: sk.Name, URL: s.co.URL, Ref: s.ref, Path: sk.Path})
+			if err != nil {
+				msg = err.Error()
+			}
+			s.msg = msg
+		case "F":
+			s.list.SetFavouritesOnly(!s.list.FavouritesOnly())
 		case "v":
 			it, ok := s.list.Current()
 			if !ok || s.co == nil {
@@ -167,7 +188,10 @@ func (s *skillsScreen) View() string {
 		return errStyle.Render("Could not load repository: "+s.err.Error()) + "\n\n" + subtleStyle.Render("press r to retry")
 	}
 	head := subtleStyle.Render(fmt.Sprintf("%s @ %s • %d skills", s.co.URL, checkoutLabel(s.co), len(s.list.items)))
-	return head + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-2)
+	if s.msg == "" {
+		return head + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-2)
+	}
+	return head + "\n\n" + s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-3) + "\n" + warnStyle.Render(s.msg)
 }
 
 func checkoutLabel(co *source.Checkout) string {
@@ -359,11 +383,19 @@ func newSearchScreen(e *env) *searchScreen {
 
 func (s *searchScreen) Title() string { return "Search" }
 func (s *searchScreen) Help() string {
-	mode := "tab search skills.sh"
+	mode, favs := "tab search skills.sh", "ctrl+f favourite • ctrl+o favourites only • "
 	if s.remote {
-		mode = "tab search known repositories"
+		mode, favs = "tab search known repositories", "" // skills.sh hits cannot be favourites
 	}
-	return "↑/↓ move • enter open • ctrl+l license • " + mode + " • ctrl+r refresh index"
+	return "↑/↓ move • enter open • ctrl+l license • " + favs + mode + " • ctrl+r refresh index"
+}
+
+// Resume shows favourites marked or unmarked on a screen opened from here.
+func (s *searchScreen) Resume() tea.Cmd {
+	if !s.remote {
+		s.refreshLocal()
+	}
+	return nil
 }
 
 func (s *searchScreen) Init() tea.Cmd {
@@ -432,11 +464,21 @@ func (s *searchScreen) refreshLocal() {
 	}
 	hits := s.idx.Search(s.input.Value())
 	items := make([]pickItem, 0, min(len(hits), 200))
-	for i, h := range hits {
-		if i == 200 {
+	for _, h := range hits {
+		if len(items) == 200 {
 			break
 		}
-		items = append(items, pickItem{Title: h.Name, Desc: withLicense(h.Repo.Name+" — "+h.Description, h.License), Badge: versionBadge(h.Version), Value: h})
+		fav := s.env.app.Config.IsFavourite(h.Repo.URL, h.Path)
+		if s.list.FavouritesOnly() && !fav {
+			continue // before the cap, so that no favourite is cut off
+		}
+		items = append(items, pickItem{
+			Title:   h.Name,
+			Desc:    withLicense(h.Repo.Name+" — "+h.Description, h.License),
+			Badge:   versionBadge(h.Version),
+			Starred: fav,
+			Value:   h,
+		})
 	}
 	s.list.SetItems(items)
 }
@@ -476,6 +518,7 @@ func (s *searchScreen) Update(msg tea.Msg) tea.Cmd {
 			s.err = nil
 			s.list.SetItems(nil)
 			if s.remote {
+				s.list.SetFavouritesOnly(false) // skills.sh hits cannot be favourites
 				s.lastQ = ""
 				return s.searchRemote()
 			}
@@ -486,6 +529,24 @@ func (s *searchScreen) Update(msg tea.Msg) tea.Cmd {
 				if ls := licenseOfHit(s.env, it.Value); ls != nil {
 					return push(ls)
 				}
+			}
+			return nil
+		case "ctrl+f":
+			it, ok := s.list.Current()
+			if !ok {
+				return nil
+			}
+			h, ok := it.Value.(registry.Entry)
+			if !ok {
+				s.err = errors.New("open the skill to mark it as a favourite")
+				return nil
+			}
+			_, s.err = toggleStar(s.env, s.list, it, config.Favourite{Name: h.Name, URL: h.Repo.URL, Ref: h.Repo.Ref, Path: h.Path})
+			return nil
+		case "ctrl+o":
+			if !s.remote {
+				s.list.SetFavouritesOnly(!s.list.FavouritesOnly())
+				s.refreshLocal()
 			}
 			return nil
 		case "ctrl+r":

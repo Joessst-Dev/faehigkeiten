@@ -41,10 +41,14 @@ Run `faehigkeiten` (or `fgk`) without arguments to start the TUI:
 
 - **Browse repositories**: pick a repository, select skills with <kbd>space</kbd>, press <kbd>enter</kbd>;
   press <kbd>v</kbd> on a skill to install an older version and <kbd>l</kbd> to read its license
-- **Search skills**: type to search the known repositories; <kbd>tab</kbd> switches to skills.sh; <kbd>ctrl+l</kbd> shows the license of a result
+- **Search skills**: type to search the known repositories; <kbd>tab</kbd> switches to skills.sh; <kbd>ctrl+l</kbd> shows the license of a result;
+  <kbd>ctrl+f</kbd> marks a result as a favourite and <kbd>ctrl+o</kbd> shows only favourites
 - **Add repository**: any source; it is saved and appears in the repository list
 - **Installed skills**: see and remove what is installed in the current target (press <kbd>c</kbd> to change how a skill is tracked, <kbd>i</kbd> to create the lockfile if there is none yet), including skills that were copied by hand or installed with another tool (marked *not managed*; press <kbd>l</kbd> to read a skill's license, <kbd>m</kbd> to manage one, or select several with <kbd>space</kbd>/<kbd>a</kbd> and press <kbd>m</kbd> to manage or <kbd>d</kbd> to delete them together)
 - **Check for updates**: select and apply available updates; press <kbd>u</kbd> on a pinned skill to unpin and update it
+- **Favourite skills**: the skills you marked as favourites, from every repository; <kbd>enter</kbd> opens a skill's
+  repository to install it, <kbd>d</kbd> removes it from the favourites. In the skill lists of a repository and of installed
+  skills, <kbd>f</kbd> marks a skill as a favourite (★) and <kbd>F</kbd> shows only favourites
 - **Change target**: switch between a project directory and the global scope
 
 The install wizard asks for the target (project or global), the agents, and the tracking mode.
@@ -76,6 +80,10 @@ fgk adopt my-skill --from my-org/skills --track hash       # …from an explicit
 fgk adopt --all                                            # manage every unmanaged skill in the target
 fgk search golang                                          # search known repositories
 fgk search --remote terraform                              # search skills.sh
+fgk fav add anthropics/skills pdf docx                     # mark skills as favourites
+fgk fav ls                                                 # list favourites
+fgk fav rm anthropics/skills docx
+fgk search --favourites pdf                                # only favourites (also: list, install --list)
 fgk repo add my-org/skills --ref main
 fgk agents                                                 # supported agents and their directories
 ```
@@ -208,6 +216,10 @@ agents:                      # override or add agent directories
     name: My Agent
     project_dir: .my-agent/skills
     global_dir: .my-agent/skills       # relative to your home directory, or absolute
+favourites:                  # skills marked with f in the TUI or `fgk fav add`
+  - name: pdf
+    url: https://github.com/anthropics/skills
+    path: skills/pdf
 ```
 
 Repositories are cloned shallowly into the user cache directory. `FAEHIGKEITEN_CONFIG_DIR` and

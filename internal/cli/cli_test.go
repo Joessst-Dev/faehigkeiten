@@ -750,6 +750,90 @@ var _ = Describe("CLI", func() {
 		Expect(code).To(Equal(0))
 	})
 
+	Describe("favourites", func() {
+		It("adds, lists and removes favourites", func() {
+			code, out, _ := run("favourite", "list")
+			Expect(code).To(Equal(0))
+			Expect(out).To(Equal("no favourites\n"))
+
+			code, out, errOut := run("fav", "add", origin, "alpha", "skills/beta")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal("added alpha\nadded beta\n"))
+			_, out, _ = run("fav", "add", origin, "alpha")
+			Expect(out).To(ContainSubstring("alpha is already a favourite"))
+
+			_, out, _ = run("fav", "ls")
+			Expect(out).To(MatchRegexp(`alpha\s+\S+\s+skills/alpha`))
+			Expect(out).To(MatchRegexp(`beta\s+\S+\s+skills/beta`))
+
+			code, out, errOut = run("fav", "rm", origin, "ALPHA")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal("removed alpha\n"))
+			code, _, errOut = run("fav", "rm", origin, "alpha")
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("not a favourite"))
+
+			cfg, err := config.Load()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cfg.FavouriteList()).To(Equal([]config.Favourite{{Name: "beta", URL: origin, Path: "skills/beta"}}))
+		})
+
+		It("asks for the path when several favourites share a name", func() {
+			cfg, err := config.Load()
+			Expect(err).NotTo(HaveOccurred())
+			cfg.AddFavourite(config.Favourite{Name: "pdf", URL: origin, Path: "a/pdf"})
+			cfg.AddFavourite(config.Favourite{Name: "pdf", URL: origin, Path: "b/pdf"})
+			Expect(cfg.Save()).To(Succeed())
+
+			code, _, errOut := run("fav", "rm", origin, "pdf")
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("name one by its path: a/pdf, b/pdf"))
+
+			code, out, errOut := run("fav", "rm", origin, "b/pdf/")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(Equal("removed pdf\n"))
+			code, _, errOut = run("fav", "rm", origin, "pdf")
+			Expect(code).To(Equal(0), errOut)
+		})
+
+		It("rejects skills missing from the source", func() {
+			code, _, errOut := run("fav", "add", origin, "gamma")
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring(`"gamma" not found`))
+		})
+
+		It("filters lists by favourites", func() {
+			code, _, errOut := run("fav", "add", origin, "beta")
+			Expect(code).To(Equal(0), errOut)
+
+			_, out, _ := run("install", origin, "--list", "--favourites")
+			Expect(out).To(ContainSubstring("beta"))
+			Expect(out).NotTo(ContainSubstring("alpha"))
+			code, _, errOut = run("install", origin, "--favourites")
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("--favourites needs --list"))
+
+			_, out, _ = run("list", "-p", project, "--favourites")
+			Expect(out).To(Equal("no favourite skills installed\n"))
+			code, _, errOut = run("install", origin, "--all", "-p", project, "-a", "claude-code")
+			Expect(code).To(Equal(0), errOut)
+			_, out, _ = run("list", "-p", project, "--favourites")
+			Expect(out).To(ContainSubstring("beta"))
+			Expect(out).NotTo(ContainSubstring("alpha"))
+
+			cfg, err := config.Load()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(testutil.SeedIndex(cfg, filepath.Join(filepath.Dir(cfgDir), "cache"), registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
+			code, out, errOut = run("search", "skill", "--favourites")
+			Expect(code).To(Equal(0), errOut)
+			Expect(out).To(ContainSubstring("beta"))
+			Expect(out).NotTo(ContainSubstring("alpha"))
+			code, _, errOut = run("search", "skill", "--favourites", "--remote")
+			Expect(code).To(Equal(1))
+			Expect(errOut).To(ContainSubstring("cannot be combined"))
+		})
+	})
+
 	It("lists agents", func() {
 		_, out, _ := run("agents")
 		Expect(out).To(ContainSubstring("claude-code"))

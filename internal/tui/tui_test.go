@@ -751,6 +751,109 @@ var _ = Describe("TUI", func() {
 		Expect(strings.Count(v, "alpha")).To(BeZero())
 	})
 
+	Describe("favourites", func() {
+		favourites := func() []config.Favourite {
+			cfg, err := config.Load()
+			Expect(err).NotTo(HaveOccurred())
+			return cfg.FavouriteList()
+		}
+		alpha := config.Favourite{Name: "alpha", Path: "skills/alpha"}
+
+		BeforeEach(func() { alpha.URL = origin })
+
+		It("marks and unmarks skills of a repository", func() {
+			addRepo()
+			d.keys("f")
+			Expect(d.view()).To(ContainSubstring("★ alpha"))
+			Expect(d.view()).To(ContainSubstring("added alpha to favourites"))
+			Expect(favourites()).To(Equal([]config.Favourite{alpha}))
+			Expect(a.Config.IsFavourite(origin, "skills/alpha")).To(BeTrue())
+
+			d.keys("f")
+			Expect(d.view()).NotTo(ContainSubstring("★"))
+			Expect(favourites()).To(BeEmpty())
+		})
+
+		It("shows only favourites", func() {
+			addRepo()
+			d.keys("down", "f", "F") // beta
+			v := d.view()
+			Expect(v).To(ContainSubstring("★ favourites only"))
+			Expect(v).To(ContainSubstring("★ beta"))
+			Expect(strings.Count(v, "alpha")).To(BeZero())
+
+			d.keys("f") // the last favourite
+			Expect(d.view()).To(ContainSubstring("no favourites here"))
+
+			d.keys("F")
+			Expect(d.view()).To(ContainSubstring("alpha"))
+			Expect(d.view()).NotTo(ContainSubstring("★ favourites only"))
+		})
+
+		It("lists favourites from the menu and opens their repository", func() {
+			addRepo()
+			d.keys("down", "f", "esc", "esc", "down", "down", "down", "enter") // beta, Favourite skills
+			v := d.view()
+			Expect(v).To(ContainSubstring("Favourite skills"))
+			Expect(v).To(ContainSubstring("beta"))
+			Expect(v).To(ContainSubstring("skills/beta"))
+
+			d.keys("enter")
+			Expect(d.view()).To(ContainSubstring("› [ ] ★ beta"))
+			d.keys("f", "esc") // unmarked on the skills screen
+			Expect(d.view()).To(ContainSubstring("no favourites yet"))
+		})
+
+		It("removes favourites in the favourites list", func() {
+			Expect(a.Config.AddFavourite(alpha)).To(BeTrue())
+			Expect(a.Config.Save()).To(Succeed())
+			d.keys("down", "down", "down", "down", "down", "enter", "d") // Favourite skills
+			Expect(d.view()).To(ContainSubstring("removed alpha from favourites"))
+			Expect(favourites()).To(BeEmpty())
+		})
+
+		It("sorts the favourites list by name and leaves out the path of root skills", func() {
+			a.Config.AddFavourite(config.Favourite{Name: "zeta", URL: origin, Path: "."})
+			a.Config.AddFavourite(alpha)
+			Expect(a.Config.Save()).To(Succeed())
+			d.keys("down", "down", "down", "down", "down", "enter") // Favourite skills
+			v := d.view()
+			Expect(strings.Index(v, "alpha")).To(BeNumerically("<", strings.Index(v, "zeta")))
+			Expect(v).To(ContainSubstring("origin • skills/alpha"))
+			Expect(v).NotTo(ContainSubstring("origin • ."))
+		})
+
+		It("marks search results and shows only favourites", func() {
+			Expect(testutil.SeedIndex(a.Config, os.Getenv(config.EnvCacheDir), registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
+			d.keys("down", "enter", "skill") // Search skills
+			Expect(d.view()).To(ContainSubstring("beta"))
+			d.send(tea.KeyMsg{Type: tea.KeyCtrlF})
+			Expect(favourites()).To(Equal([]config.Favourite{alpha}))
+
+			d.send(tea.KeyMsg{Type: tea.KeyCtrlO})
+			v := d.view()
+			Expect(v).To(ContainSubstring("★ alpha"))
+			Expect(v).NotTo(ContainSubstring("beta"))
+		})
+
+		It("shows favourites marked on a skills screen opened from the search", func() {
+			Expect(testutil.SeedIndex(a.Config, os.Getenv(config.EnvCacheDir), registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
+			d.keys("down", "enter", "beta", "enter") // Search skills, open beta
+			Expect(d.view()).To(ContainSubstring("› [ ] beta"))
+			d.keys("f", "esc")
+			Expect(d.view()).To(ContainSubstring("★ beta"))
+		})
+
+		It("marks installed skills with a source only", func() {
+			Expect(testutil.WriteFiles(project, map[string]string{
+				".claude/skills/handmade/SKILL.md": testutil.SkillMD("handmade", "Copied manually", ""),
+			})).To(Succeed())
+			d.keys("down", "down", "down", "enter", "f") // Installed skills
+			Expect(d.view()).To(ContainSubstring("manage the skill with a source"))
+			Expect(favourites()).To(BeEmpty())
+		})
+	})
+
 	Describe("settings", func() {
 		saved := func() *config.Config {
 			cfg, err := config.Load()
@@ -960,7 +1063,15 @@ var _ = Describe("TUI", func() {
 		Entry("tiny terminal", 30, 8, "enter open", "enter"),
 		Entry("settings, tiny terminal", 30, 8, "enter select", "G", "up", "enter"),
 		Entry("agents, small terminal", 60, 12, "enter edit", "G", "up", "enter", "down", "enter"),
+		Entry("long help keeps the global keys", 60, 20, "enter open • / filter • … • esc back • ctrl+c quit", "enter"),
 	)
+
+	It("keeps the global keys in the help bar while there is room", func() {
+		const hl = "a one • b two • c three"
+		Expect(fitHelp(hl, "esc back", 80)).To(Equal(hl + " • esc back"))
+		Expect(fitHelp(hl, "esc back", 32)).To(Equal("a one • b two • … • esc back"))
+		Expect(fitHelp(hl, "esc back", 20)).To(Equal(hl+" • esc back"), "too narrow: clipped as a whole")
+	})
 
 	It("quits from the menu", func() {
 		d.keys("q")

@@ -4,12 +4,14 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -37,6 +39,37 @@ type AgentOverride struct {
 	GlobalDir  string `yaml:"global_dir,omitempty"`
 }
 
+// Favourite is a skill the user marked, identified by its source URL and its
+// path in the source.
+type Favourite struct {
+	Name string `yaml:"name"`
+	URL  string `yaml:"url"`
+	Ref  string `yaml:"ref,omitempty"`
+	Path string `yaml:"path"`
+}
+
+// FromSource reports whether f is a skill of the source url. URLs are
+// compared ignoring case, since GitHub owner and repository names are.
+func (f Favourite) FromSource(url string) bool {
+	return strings.EqualFold(f.URL, url)
+}
+
+// Is reports whether f is the skill at path in the source url.
+func (f Favourite) Is(url, path string) bool {
+	return f.FromSource(url) && f.Path == path
+}
+
+// SortFavourites sorts favourites by name, then by source and path.
+func SortFavourites(favs []Favourite) {
+	slices.SortFunc(favs, func(a, b Favourite) int {
+		return cmp.Or(
+			strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)),
+			strings.Compare(strings.ToLower(a.URL), strings.ToLower(b.URL)),
+			strings.Compare(a.Path, b.Path),
+		)
+	})
+}
+
 // Config is the persisted user configuration. Its fields may change while
 // background tasks read them, so they are only reached through methods that
 // hold mu.
@@ -45,6 +78,7 @@ type Config struct {
 	repos         []Repo
 	defaultAgents []string
 	agents        map[string]AgentOverride
+	favourites    []Favourite
 }
 
 // fileConfig is the on-disk form of Config.
@@ -52,13 +86,14 @@ type fileConfig struct {
 	Repos         []Repo                   `yaml:"repos,omitempty"`
 	DefaultAgents []string                 `yaml:"default_agents,omitempty"`
 	Agents        map[string]AgentOverride `yaml:"agents,omitempty"`
+	Favourites    []Favourite              `yaml:"favourites,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler.
 func (c *Config) MarshalYAML() (any, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return fileConfig{Repos: slices.Clone(c.repos), DefaultAgents: slices.Clone(c.defaultAgents), Agents: maps.Clone(c.agents)}, nil
+	return fileConfig{Repos: slices.Clone(c.repos), DefaultAgents: slices.Clone(c.defaultAgents), Agents: maps.Clone(c.agents), Favourites: slices.Clone(c.favourites)}, nil
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler.
@@ -68,7 +103,7 @@ func (c *Config) UnmarshalYAML(n *yaml.Node) error {
 		return err
 	}
 	c.mu.Lock()
-	c.repos, c.defaultAgents, c.agents = f.Repos, f.DefaultAgents, f.Agents
+	c.repos, c.defaultAgents, c.agents, c.favourites = f.Repos, f.DefaultAgents, f.Agents, f.Favourites
 	c.mu.Unlock()
 	return nil
 }
@@ -252,12 +287,51 @@ func (c *Config) RemoveAgent(id string) bool {
 	return true
 }
 
+// FavouriteList returns a copy of the user's favourite skills.
+func (c *Config) FavouriteList() []Favourite {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.favourites)
+}
+
+// IsFavourite reports whether the skill at path in the source url is a favourite.
+func (c *Config) IsFavourite(url, path string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.ContainsFunc(c.favourites, func(x Favourite) bool { return x.Is(url, path) })
+}
+
+// AddFavourite adds f unless a favourite with the same URL and path exists.
+// It reports whether f was added.
+func (c *Config) AddFavourite(f Favourite) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if slices.ContainsFunc(c.favourites, func(x Favourite) bool { return x.Is(f.URL, f.Path) }) {
+		return false
+	}
+	c.favourites = append(c.favourites, f)
+	return true
+}
+
+// RemoveFavourite removes the favourite with the given URL and path and
+// reports whether it existed.
+func (c *Config) RemoveFavourite(url, path string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	n := len(c.favourites)
+	c.favourites = slices.DeleteFunc(c.favourites, func(x Favourite) bool { return x.Is(url, path) })
+	if len(c.favourites) == 0 {
+		c.favourites = nil
+	}
+	return len(c.favourites) != n
+}
+
 // Replace sets all settings of c to those of o, for example after o was
 // loaded from the file and changed.
 func (c *Config) Replace(o *Config) {
-	repos, defaults, agents := o.RepoList(), o.DefaultAgentList(), o.AgentOverrides()
+	repos, defaults, agents, favs := o.RepoList(), o.DefaultAgentList(), o.AgentOverrides(), o.FavouriteList()
 	c.mu.Lock()
-	c.repos, c.defaultAgents, c.agents = repos, defaults, agents
+	c.repos, c.defaultAgents, c.agents, c.favourites = repos, defaults, agents, favs
 	c.mu.Unlock()
 }
 
