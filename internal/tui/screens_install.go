@@ -579,9 +579,11 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 		}
 		switch err := s.in.Lock.Init(); {
 		case errors.Is(err, fs.ErrExist):
-			// Created elsewhere since the list was loaded: show its skills.
+			// Created elsewhere since the list was loaded: show its skills,
+			// or why it cannot be loaded.
+			p := s.in.Lock.Path()
 			s.reload()
-			s.notify(s.in.Lock.Path()+" already exists", nil)
+			s.notify(p+" already exists", nil)
 		case err != nil:
 			s.notify("", err)
 		default:
@@ -643,38 +645,67 @@ type trackingScreen struct {
 	in     *install.Installer
 	entry  lock.Entry
 	list   *pickList
+	spin   spinner.Model
+	busy   string
 	err    error
 	onDone func(msg string)
 }
 
+// retrackedMsg carries the entry switched after checking upstream.
+type retrackedMsg struct {
+	entry lock.Entry
+	err   error
+}
+
 // newTrackingScreen lists every tracking mode; the ones entry cannot switch
-// to are disabled and say why.
+// to are disabled and say why. Version tracking of a skill whose installed
+// copy has no version stays enabled: choosing it checks upstream.
 func newTrackingScreen(e *env, in *install.Installer, entry lock.Entry, onDone func(string)) *trackingScreen {
-	items := make([]pickItem, 0, len(install.Trackings))
-	for _, t := range install.Trackings {
-		it := pickItem{Title: trackingLabel(t), Value: t}
-		if next, err := in.Retracked(entry, t); err != nil {
-			it.Disabled, it.Desc = true, err.Error()
-		} else {
-			it.Desc = trackingDesc(t, skill.Skill{Version: next.Version})
+	choices := in.Choices(entry)
+	items := make([]pickItem, 0, len(choices))
+	for _, c := range choices {
+		it := pickItem{Title: trackingLabel(c.Tracking), Value: c}
+		switch {
+		case errors.Is(c.Err, install.ErrNoVersion):
+			it.Desc = "No version installed; checks whether upstream declares one and offers it as an update"
+		case c.Err != nil:
+			it.Disabled, it.Desc = true, c.Err.Error()
+		default:
+			it.Desc = trackingDesc(c.Tracking, skill.Skill{Version: c.Entry.Version})
 		}
-		if t == entry.Tracking {
+		if c.Tracking == entry.Tracking {
 			it.Badge = "current"
 		}
 		items = append(items, it)
 	}
 	l := newPickList(items, false)
-	l.Focus(func(it pickItem) bool { return it.Value == entry.Tracking })
-	return &trackingScreen{env: e, in: in, entry: entry, list: l, onDone: onDone}
+	l.Focus(func(it pickItem) bool { return it.Value.(install.Choice).Tracking == entry.Tracking })
+	return &trackingScreen{env: e, in: in, entry: entry, list: l, spin: newSpinner(), onDone: onDone}
 }
 
 func (s *trackingScreen) Init() tea.Cmd { return nil }
 func (s *trackingScreen) Title() string { return s.entry.Name + " tracking" }
-func (s *trackingScreen) Help() string  { return "↑/↓ move • enter select • esc back" }
+func (s *trackingScreen) Help() string {
+	if s.busy != "" {
+		return ""
+	}
+	return "↑/↓ move • enter select • esc back"
+}
 
 func (s *trackingScreen) Update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case spinner.TickMsg:
+		return tick(&s.spin, s.busy != "", msg)
+	case retrackedMsg:
+		s.busy = ""
+		if msg.err != nil {
+			s.err = msg.err
+			return nil
+		}
+		return s.apply(msg.entry)
+	}
 	k, ok := msg.(tea.KeyMsg)
-	if !ok {
+	if !ok || s.busy != "" {
 		return nil
 	}
 	if handled, cmd := s.list.Update(k); handled {
@@ -688,29 +719,43 @@ func (s *trackingScreen) Update(msg tea.Msg) tea.Cmd {
 		if !ok || it.Disabled {
 			return nil
 		}
-		e, changed, err := s.in.Retrack(s.entry.Name, it.Value.(lock.Tracking))
-		if err == nil && !changed {
+		c := it.Value.(install.Choice)
+		switch {
+		case c.Tracking == s.entry.Tracking:
 			return pop
+		case errors.Is(c.Err, install.ErrNoVersion):
+			s.busy, s.err = "checking upstream for a version", nil
+			r, ctx, entry := s.env.app.NewRetracker(s.in), s.env.ctx, s.entry
+			return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
+				e, err := r.Retracked(ctx, entry, c.Tracking)
+				return retrackedMsg{entry: e, err: err}
+			}))
 		}
-		if err == nil {
-			err = s.in.Lock.Save()
-		}
-		if err != nil {
-			// Keep the lockfile in memory as it is on disk.
-			s.in.Lock.Upsert(s.entry)
-			s.err = err
-			return nil
-		}
-		s.onDone(e.Name + " now uses " + install.Describe(e))
-		return pop
+		return s.apply(c.Entry)
 	}
 	return nil
+}
+
+// apply records e in the lockfile and returns to the installed skills.
+func (s *trackingScreen) apply(e lock.Entry) tea.Cmd {
+	s.in.Lock.Upsert(e)
+	if err := s.in.Lock.Save(); err != nil {
+		// Keep the lockfile in memory as it is on disk.
+		s.in.Lock.Upsert(s.entry)
+		s.err = err
+		return nil
+	}
+	s.onDone(e.Name + " now uses " + install.Describe(e))
+	return pop
 }
 
 func (s *trackingScreen) View() string {
 	v := "How should " + s.entry.Name + " be checked for updates? The installed files stay as they are.\n\n" +
 		s.list.View(s.env.bodyWidth(), s.env.bodyHeight()-4)
-	if s.err != nil {
+	switch {
+	case s.busy != "":
+		v += "\n" + spinLine(s.spin, s.busy)
+	case s.err != nil:
 		v += "\n" + errStyle.Render(s.err.Error())
 	}
 	return v

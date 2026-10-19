@@ -176,37 +176,15 @@ func (f *File) Init() error {
 	if f.exists {
 		return fmt.Errorf("%s: %w", f.path, fs.ErrExist)
 	}
-	return f.write(os.O_EXCL)
-}
-
-// Save writes the lockfile, sorted by skill name. An empty lockfile is only
-// written when it is already on disk; once created, the file is kept.
-func (f *File) Save() error {
-	if len(f.Skills) == 0 && !f.exists {
-		return nil
-	}
-	return f.write(os.O_TRUNC)
-}
-
-// write stores the lockfile, opening it with os.O_CREATE|os.O_WRONLY|flag.
-func (f *File) write(flag int) error {
-	if f.Skills == nil {
-		f.Skills = []Entry{} // "skills: []" rather than "skills: null"
-	}
-	slices.SortFunc(f.Skills, func(a, b Entry) int { return strings.Compare(a.Name, b.Name) })
-	data, err := marshal(f)
+	data, err := f.encode()
 	if err != nil {
 		return err
 	}
-	header := []byte("# Managed by faehigkeiten (https://github.com/Joessst-Dev/faehigkeiten). Do not edit by hand.\n")
-	if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
-		return err
-	}
-	out, err := os.OpenFile(f.path, os.O_CREATE|os.O_WRONLY|flag, 0o644)
+	out, err := os.OpenFile(f.path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
-	_, err = out.Write(append(header, data...))
+	_, err = out.Write(data)
 	if cerr := out.Close(); err == nil {
 		err = cerr
 	}
@@ -215,6 +193,41 @@ func (f *File) write(flag int) error {
 	}
 	f.exists = true
 	return nil
+}
+
+// Save writes the lockfile, sorted by skill name. An empty lockfile is only
+// written when it is already on disk; once created, the file is kept.
+func (f *File) Save() error {
+	if len(f.Skills) == 0 && !f.exists {
+		return nil
+	}
+	data, err := f.encode()
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(f.path, data, 0o644); err != nil {
+		return err
+	}
+	f.exists = true
+	return nil
+}
+
+// encode sorts the skills by name and returns the file content. It also
+// creates the directory of the lockfile.
+func (f *File) encode() ([]byte, error) {
+	if f.Skills == nil {
+		f.Skills = []Entry{} // "skills: []" rather than "skills: null"
+	}
+	slices.SortFunc(f.Skills, func(a, b Entry) int { return strings.Compare(a.Name, b.Name) })
+	data, err := marshal(f)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
+		return nil, err
+	}
+	header := []byte("# Managed by faehigkeiten (https://github.com/Joessst-Dev/faehigkeiten). Do not edit by hand.\n")
+	return append(header, data...), nil
 }
 
 // Get returns the entry for the named skill.

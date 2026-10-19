@@ -420,9 +420,12 @@ var _ = Describe("TUI", func() {
 		d.keys("c")
 		v := d.view()
 		Expect(v).To(ContainSubstring("How should beta be checked for updates?"))
-		Expect(v).To(ContainSubstring("beta has no version"), "version tracking is offered disabled")
-		d.keys("up", "enter") // the disabled version tracking is not chosen
-		Expect(d.view()).To(ContainSubstring("How should beta be checked for updates?"))
+		Expect(v).To(ContainSubstring("checks whether upstream declares one"))
+		d.keys("up", "enter") // version tracking: upstream has no version either
+		v = d.view()
+		Expect(v).To(ContainSubstring("How should beta be checked for updates?"))
+		Expect(v).To(ContainSubstring("no version, installed or upstream"))
+
 		d.keys("down", "down", "enter") // Untracked
 		Expect(d.view()).To(ContainSubstring("beta now uses untracked"))
 		e, _ := lockfile().Get("beta")
@@ -433,6 +436,15 @@ var _ = Describe("TUI", func() {
 		e, _ = lockfile().Get("beta")
 		Expect(e.Tracking).To(Equal(lock.TrackHash))
 		Expect(e.Hash).NotTo(BeEmpty())
+
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/beta/SKILL.md": testutil.SkillMD("beta", "Unversioned skill", "2.0.0"),
+		}, "version beta")).To(Succeed())
+		d.keys("c", "up", "enter") // version tracking, now that upstream declares one
+		Expect(d.view()).To(ContainSubstring("beta now uses version 0.0.0"))
+		e, _ = lockfile().Get("beta")
+		Expect(e.Tracking).To(Equal(lock.TrackVersion))
+		Expect(e.Version).To(Equal(install.UnknownVersion))
 	})
 
 	It("explains why a pinned skill cannot change its tracking mode", func() {
@@ -465,6 +477,15 @@ var _ = Describe("TUI", func() {
 		Expect(v).To(ContainSubstring("already exists"))
 		Expect(v).To(ContainSubstring("alpha"))
 		Expect(lockfile().Skills).To(HaveLen(1))
+	})
+
+	It("shows why a lockfile created elsewhere cannot be loaded", func() {
+		d.keys("down", "down", "down", "enter") // Installed skills
+		Expect(os.WriteFile(filepath.Join(project, lock.FileName), []byte("version: 99\n"), 0o644)).To(Succeed())
+		d.keys("i")
+		Expect(d.view()).To(ContainSubstring("please upgrade"))
+		d.keys("i") // nothing loaded: ignored
+		Expect(d.view()).To(ContainSubstring("please upgrade"))
 	})
 
 	It("does not crash creating a lockfile when it could not be loaded", func() {

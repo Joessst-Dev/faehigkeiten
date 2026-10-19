@@ -327,6 +327,33 @@ var _ = Describe("CLI", func() {
 		Expect(errOut).To(ContainSubstring("invalid tracking mode"))
 	})
 
+	It("tracks the version of a skill once upstream declares one", func() {
+		code, _, errOut := run("install", origin, "beta", "-p", project, "-a", "claude-code")
+		Expect(code).To(Equal(0), errOut)
+
+		code, _, errOut = run("track", "version", "--all", "-p", project)
+		Expect(code).To(Equal(1))
+		Expect(errOut).To(ContainSubstring("skipping beta: skill beta has no version, installed or upstream"))
+		Expect(errOut).To(ContainSubstring("no skill can use version tracking"))
+
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/beta/SKILL.md": testutil.SkillMD("beta", "Unversioned", "1.2.0"),
+		}, "version beta")).To(Succeed())
+		code, out, errOut := run("track", "version", "beta", "-p", project)
+		Expect(code).To(Equal(0), errOut)
+		Expect(out).To(ContainSubstring("beta: untracked → version 0.0.0"))
+
+		code, out, _ = run("check", "-p", project)
+		Expect(code).To(Equal(0))
+		Expect(out).To(MatchRegexp(`beta\s+version\s+0.0.0\s+1.2.0\s+update available`))
+	})
+
+	It("explains that there is nothing to change without managed skills", func() {
+		code, _, errOut := run("track", "hash", "--all", "-p", project)
+		Expect(code).To(Equal(1))
+		Expect(errOut).To(ContainSubstring("no managed skills in this target"))
+	})
+
 	Describe("versions", func() {
 		var src string
 		var commits map[string]string

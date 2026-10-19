@@ -122,7 +122,9 @@ lockfile exists, it is kept even when its last skill is removed.
 screen) changes how installed skills are tracked **without reinstalling them**. The recorded hash of
 the installed content is kept, so local edits are still detected, and switching to `hash` keeps the
 recorded version, so `version` tracking can be restored later; otherwise the version is read from the
-installed `SKILL.md`. Switching an untracked skill to `version` or `hash` takes its current installed
+installed `SKILL.md`. If the installed copy has no version, the source is fetched: when upstream
+declares one, the skill is tracked from `0.0.0` (as when adopting such a copy), so the upstream version
+is offered as an update. Switching an untracked skill to `version` or `hash` takes its current installed
 content as the baseline. Pinned skills always use version tracking; unpin them first. With named
 skills, nothing changes unless every one of them can switch; with `--all`, skills that cannot use the
 mode (for example `version` for a skill without one) are skipped. The TUI shows modes a skill cannot

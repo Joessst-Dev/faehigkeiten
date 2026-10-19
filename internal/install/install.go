@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/agent"
@@ -130,12 +131,17 @@ func DefaultTracking(s skill.Skill) lock.Tracking {
 	return lock.TrackNone
 }
 
-// AvailableTracking lists the tracking modes a skill supports.
+// Trackings lists the tracking modes in the order they are offered.
+var Trackings = []lock.Tracking{lock.TrackVersion, lock.TrackHash, lock.TrackNone}
+
+// AvailableTracking lists the tracking modes a skill supports: all of
+// Trackings, without version tracking for skills without a version.
 func AvailableTracking(s skill.Skill) []lock.Tracking {
-	if s.HasVersion() {
-		return []lock.Tracking{lock.TrackVersion, lock.TrackHash, lock.TrackNone}
+	modes := slices.Clone(Trackings)
+	if !s.HasVersion() {
+		modes = slices.DeleteFunc(modes, func(t lock.Tracking) bool { return t == lock.TrackVersion })
 	}
-	return []lock.Tracking{lock.TrackHash, lock.TrackNone}
+	return modes
 }
 
 var invalidName = regexp.MustCompile(`[^a-z0-9._-]+`)
@@ -328,16 +334,73 @@ func (in *Installer) InstalledSkill(e lock.Entry) (skill.Skill, error) {
 	return skill.LoadDir(dir, dir)
 }
 
-// Trackings lists the tracking modes in the order they are offered.
-var Trackings = []lock.Tracking{lock.TrackVersion, lock.TrackHash, lock.TrackNone}
+// ErrNoVersion is returned by Retracked when version tracking needs a
+// version that neither the lockfile nor the installed copy has.
+var ErrNoVersion = errors.New("has no version")
+
+// UnknownVersion is recorded for a version-tracked skill whose installed copy
+// declares no version, so any upstream version counts as an update.
+const UnknownVersion = "0.0.0"
+
+// Choice is the outcome of switching an entry to one tracking mode: the
+// entry as it would be recorded, or why it cannot switch.
+type Choice struct {
+	Tracking lock.Tracking
+	Entry    lock.Entry
+	Err      error
+}
+
+// Choices returns the outcome of switching e to each of Trackings, reading
+// and hashing the installed copy at most once.
+func (in *Installer) Choices(e lock.Entry) []Choice {
+	c := in.installedCopy(e)
+	out := make([]Choice, 0, len(Trackings))
+	for _, t := range Trackings {
+		next, err := c.retracked(t)
+		out = append(out, Choice{Tracking: t, Entry: next, Err: err})
+	}
+	return out
+}
 
 // Retracked returns e as it is recorded after switching it to tracking mode
 // t, or why it cannot switch. Nothing is reinstalled: the recorded content
 // hash is kept, so local edits are still detected, and only computed from the
 // installed copy when the skill was untracked. Switching to hash tracking
 // keeps the recorded version, so version tracking can be restored; without
-// one, the version comes from the installed copy.
+// one, the version comes from the installed copy, else ErrNoVersion is
+// returned. The lockfile is not changed.
 func (in *Installer) Retracked(e lock.Entry, t lock.Tracking) (lock.Entry, error) {
+	return in.installedCopy(e).retracked(t)
+}
+
+// installedCopy switches one entry to other tracking modes, loading and
+// hashing its installed copy only when needed and at most once.
+type installedCopy struct {
+	entry lock.Entry
+	load  func() (skill.Skill, error)
+	hash  func() (string, error)
+}
+
+func (in *Installer) installedCopy(e lock.Entry) installedCopy {
+	load := sync.OnceValues(func() (skill.Skill, error) { return in.InstalledSkill(e) })
+	return installedCopy{
+		entry: e,
+		load:  load,
+		hash: sync.OnceValues(func() (string, error) {
+			s, err := load()
+			if err != nil {
+				return "", err
+			}
+			return skill.Hash(s.Dir)
+		}),
+	}
+}
+
+func (c installedCopy) retracked(t lock.Tracking) (lock.Entry, error) {
+	e := c.entry
+	if _, err := lock.ParseTracking(string(t)); err != nil {
+		return lock.Entry{}, err
+	}
 	switch {
 	case e.Tracking == t:
 		return e, nil
@@ -346,48 +409,28 @@ func (in *Installer) Retracked(e lock.Entry, t lock.Tracking) (lock.Entry, error
 	case t == lock.TrackNone:
 		e.Tracking, e.Version, e.Hash = t, "", ""
 		return e, nil
-	case t != lock.TrackVersion && t != lock.TrackHash:
-		return lock.Entry{}, fmt.Errorf("invalid tracking mode %q", t)
 	case e.Source == "":
 		return lock.Entry{}, fmt.Errorf("%s is managed without a source and cannot be tracked for updates", e.Name)
 	}
-	if e.Hash == "" || (t == lock.TrackVersion && e.Version == "") {
-		s, err := in.InstalledSkill(e)
+	if t == lock.TrackVersion && e.Version == "" {
+		s, err := c.load()
 		if err != nil {
 			return lock.Entry{}, err
 		}
-		if e.Version == "" {
-			e.Version = s.Version
+		if !s.HasVersion() {
+			return lock.Entry{}, fmt.Errorf("skill %s %w; use hash tracking instead", e.Name, ErrNoVersion)
 		}
-		if e.Hash == "" {
-			if e.Hash, err = skill.Hash(s.Dir); err != nil {
-				return lock.Entry{}, err
-			}
-		}
+		e.Version = s.Version
 	}
-	if t == lock.TrackVersion && e.Version == "" {
-		return lock.Entry{}, fmt.Errorf("skill %s has no version; use hash tracking instead", e.Name)
+	if e.Hash == "" {
+		h, err := c.hash()
+		if err != nil {
+			return lock.Entry{}, err
+		}
+		e.Hash = h
 	}
 	e.Tracking = t
 	return e, nil
-}
-
-// Retrack switches the named skill to tracking mode t as Retracked describes
-// and reports whether its entry changed. The lockfile is not saved.
-func (in *Installer) Retrack(name string, t lock.Tracking) (lock.Entry, bool, error) {
-	e, ok := in.Lock.Get(name)
-	if !ok {
-		return lock.Entry{}, false, fmt.Errorf("skill %s is not installed", name)
-	}
-	if e.Tracking == t {
-		return e, false, nil
-	}
-	e, err := in.Retracked(e, t)
-	if err != nil {
-		return lock.Entry{}, false, err
-	}
-	in.Lock.Upsert(e)
-	return e, true, nil
 }
 
 // License returns the license recorded for an entry.
@@ -716,7 +759,7 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 		entry.Version = f.Version
 		if entry.Version == "" {
 			// Unknown local version: any upstream version counts as an update.
-			entry.Version = "0.0.0"
+			entry.Version = UnknownVersion
 		}
 	case lock.TrackHash, lock.TrackNone:
 	default:

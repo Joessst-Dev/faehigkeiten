@@ -627,10 +627,12 @@ func newTrackCommand() *cobra.Command {
 		Use:   "track <version|hash|none> [skill...]",
 		Short: "Change how installed skills are checked for updates",
 		Long: `Change the tracking mode of installed skills. No files are reinstalled: the
-version is read from the installed copy, and the recorded content hash is
-kept, so local edits are still detected. Skills that were untracked use their
-installed content as the baseline. The next check compares against the new
-mode.
+recorded content hash is kept, so local edits are still detected, and the
+version is the recorded one or else read from the installed copy. When the
+installed copy has no version, the source is fetched: if upstream declares
+one, the skill is tracked from 0.0.0, so any upstream version is offered as
+an update. Skills that were untracked use their installed content as the
+baseline. The next check compares against the new mode.
 
 Pinned skills always use version tracking; unpin them first with
 "faehigkeiten update <skill> --unpin". With --all, skills that cannot use the
@@ -647,40 +649,47 @@ mode are skipped and reported.`,
 			if err != nil {
 				return err
 			}
-			_, in, err := scope.open()
+			a, in, err := scope.open()
 			if err != nil {
 				return err
 			}
 			names := args[1:]
 			if all {
+				if len(in.Lock.Skills) == 0 {
+					return fmt.Errorf("no managed skills in this target (see \"faehigkeiten adopt\")")
+				}
 				for _, e := range in.Lock.Skills {
 					names = append(names, e.Name)
-				}
-			} else {
-				for _, name := range names {
-					if _, ok := in.Lock.Get(name); !ok {
-						return errNotInstalled(name)
-					}
 				}
 			}
 			// Every skill is switched before anything is reported, so an
 			// error leaves the lockfile unsaved and nothing claimed as done.
+			r := a.NewRetracker(in)
 			var lines []string
 			changed := false
 			for _, name := range names {
-				prev, _ := in.Lock.Get(name)
-				e, ok, err := in.Retrack(name, mode)
+				prev, ok := in.Lock.Get(name)
+				if !ok {
+					return errNotInstalled(name)
+				}
+				if prev.Tracking == mode {
+					lines = append(lines, fmt.Sprintf("%s already uses %s tracking", name, mode))
+					continue
+				}
+				e, err := r.Retracked(cmd.Context(), prev, mode)
 				switch {
 				case err != nil && !all:
 					return err
 				case err != nil:
 					fmt.Fprintf(cmd.ErrOrStderr(), "skipping %s: %v\n", name, err)
-				case ok:
+				default:
+					in.Lock.Upsert(e)
 					changed = true
 					lines = append(lines, fmt.Sprintf("%s: %s → %s", name, install.Describe(prev), install.Describe(e)))
-				default:
-					lines = append(lines, fmt.Sprintf("%s already uses %s tracking", name, mode))
 				}
+			}
+			if len(lines) == 0 {
+				return fmt.Errorf("no skill can use %s tracking", mode)
 			}
 			if changed {
 				if err := in.Lock.Save(); err != nil {
