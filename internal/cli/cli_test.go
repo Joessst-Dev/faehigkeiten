@@ -260,7 +260,107 @@ var _ = Describe("CLI", func() {
 		code, out, _ = run("remove", "alpha", "beta", "-p", project)
 		Expect(code).To(Equal(0))
 		Expect(out).To(ContainSubstring("removed beta"))
-		Expect(filepath.Join(project, lock.FileName)).NotTo(BeAnExistingFile())
+		lf, err = lock.Load(filepath.Join(project, lock.FileName))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(lf.Exists()).To(BeTrue(), "the emptied lockfile is kept")
+		Expect(lf.Skills).To(BeEmpty())
+	})
+
+	It("initializes a lockfile", func() {
+		code, out, errOut := run("init", "-p", project)
+		Expect(code).To(Equal(0), errOut)
+		p := filepath.Join(project, lock.FileName)
+		Expect(out).To(ContainSubstring("created " + p))
+		Expect(p).To(BeAnExistingFile())
+
+		code, out, _ = run("init", "-p", project)
+		Expect(code).To(Equal(0))
+		Expect(out).To(ContainSubstring("already exists"))
+	})
+
+	It("hints at unmanaged skills when initializing", func() {
+		Expect(testutil.WriteFiles(project, map[string]string{
+			".claude/skills/mine/SKILL.md": testutil.SkillMD("mine", "Mine", ""),
+		})).To(Succeed())
+		code, out, _ := run("init", "-p", project)
+		Expect(code).To(Equal(0))
+		Expect(out).To(ContainSubstring("1 unmanaged skill(s) found"))
+	})
+
+	It("changes the tracking mode of installed skills", func() {
+		code, _, errOut := run("install", origin, "--all", "-p", project, "-a", "claude-code")
+		Expect(code).To(Equal(0), errOut)
+
+		code, out, errOut := run("track", "hash", "alpha", "-p", project)
+		Expect(code).To(Equal(0), errOut)
+		Expect(out).To(MatchRegexp(`alpha: version 1.0.0 → hash [0-9a-f]+`))
+		lf, err := lock.Load(filepath.Join(project, lock.FileName))
+		Expect(err).NotTo(HaveOccurred())
+		alpha, _ := lf.Get("alpha")
+		Expect(alpha.Tracking).To(Equal(lock.TrackHash))
+		Expect(alpha.Version).To(Equal("1.0.0"), "kept to restore version tracking")
+
+		code, out, _ = run("track", "hash", "alpha", "-p", project)
+		Expect(code).To(Equal(0))
+		Expect(out).To(ContainSubstring("alpha already uses hash tracking"))
+
+		code, out, errOut = run("track", "version", "alpha", "beta", "-p", project)
+		Expect(code).To(Equal(1))
+		Expect(errOut).To(ContainSubstring("no version"))
+		Expect(out).To(BeEmpty(), "nothing is reported as changed")
+		lf, err = lock.Load(filepath.Join(project, lock.FileName))
+		Expect(err).NotTo(HaveOccurred())
+		alpha, _ = lf.Get("alpha")
+		Expect(alpha.Tracking).To(Equal(lock.TrackHash), "nothing is saved")
+
+		code, out, errOut = run("track", "version", "--all", "-p", project)
+		Expect(code).To(Equal(1), "beta could not switch")
+		Expect(out).To(ContainSubstring("alpha: hash"))
+		Expect(errOut).To(ContainSubstring("skipping beta"))
+		Expect(errOut).To(ContainSubstring("1 of 2 skill(s) could not switch to version tracking"))
+		lf, err = lock.Load(filepath.Join(project, lock.FileName))
+		Expect(err).NotTo(HaveOccurred())
+		alpha, _ = lf.Get("alpha")
+		Expect(alpha.Tracking).To(Equal(lock.TrackVersion), "the skills that switched are saved")
+
+		code, out, errOut = run("track", "hash", "alpha", "alpha", "-p", project)
+		Expect(code).To(Equal(0), errOut)
+		Expect(strings.Count(out, "alpha")).To(Equal(1), "a skill named twice is switched once")
+
+		code, _, errOut = run("track", "none", "missing", "-p", project)
+		Expect(code).To(Equal(1))
+		Expect(errOut).To(ContainSubstring("not installed"))
+
+		code, _, errOut = run("track", "fast", "alpha", "-p", project)
+		Expect(code).To(Equal(1))
+		Expect(errOut).To(ContainSubstring("invalid tracking mode"))
+	})
+
+	It("tracks the version of a skill once upstream declares one", func() {
+		code, _, errOut := run("install", origin, "beta", "-p", project, "-a", "claude-code")
+		Expect(code).To(Equal(0), errOut)
+
+		code, _, errOut = run("track", "version", "--all", "-p", project)
+		Expect(code).To(Equal(1))
+		Expect(errOut).To(ContainSubstring("skipping beta: skill beta has no version, installed or upstream"))
+		Expect(errOut).To(ContainSubstring("1 of 1 skill(s) could not switch to version tracking"))
+
+		Expect(testutil.Commit(repo, origin, map[string]string{
+			"skills/beta/SKILL.md": testutil.SkillMD("beta", "Unversioned", "1.2.0"),
+		}, "version beta")).To(Succeed())
+		code, out, errOut := run("track", "version", "beta", "-p", project)
+		Expect(code).To(Equal(0), errOut)
+		Expect(out).To(ContainSubstring("beta: untracked → version 0.0.0"))
+
+		code, out, _ = run("check", "-p", project)
+		Expect(code).To(Equal(0))
+		Expect(out).To(MatchRegexp(`beta\s+version\s+0.0.0\s+1.2.0\s+update available`))
+	})
+
+	It("explains that there is nothing to change without managed skills", func() {
+		code, _, errOut := run("track", "hash", "--all", "-p", project)
+		Expect(code).To(Equal(1))
+		Expect(errOut).To(ContainSubstring("no managed skills in this target"))
 	})
 
 	Describe("versions", func() {

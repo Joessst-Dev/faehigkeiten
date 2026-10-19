@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/agent"
@@ -130,12 +131,17 @@ func DefaultTracking(s skill.Skill) lock.Tracking {
 	return lock.TrackNone
 }
 
-// AvailableTracking lists the tracking modes a skill supports.
+// Trackings lists the tracking modes in the order they are offered.
+var Trackings = []lock.Tracking{lock.TrackVersion, lock.TrackHash, lock.TrackNone}
+
+// AvailableTracking lists the tracking modes a skill supports: all of
+// Trackings, without version tracking for skills without a version.
 func AvailableTracking(s skill.Skill) []lock.Tracking {
-	if s.HasVersion() {
-		return []lock.Tracking{lock.TrackVersion, lock.TrackHash, lock.TrackNone}
+	modes := slices.Clone(Trackings)
+	if !s.HasVersion() {
+		modes = slices.DeleteFunc(modes, func(t lock.Tracking) bool { return t == lock.TrackVersion })
 	}
-	return []lock.Tracking{lock.TrackHash, lock.TrackNone}
+	return modes
 }
 
 var invalidName = regexp.MustCompile(`[^a-z0-9._-]+`)
@@ -317,6 +323,118 @@ func (in *Installer) entryDirs(e lock.Entry) ([]string, error) {
 		}
 	}
 	return dirs, nil
+}
+
+// InstalledSkill loads the first installed copy of e.
+func (in *Installer) InstalledSkill(e lock.Entry) (skill.Skill, error) {
+	dir, err := in.InstalledDir(e)
+	if err != nil {
+		return skill.Skill{}, err
+	}
+	return skill.LoadDir(dir, dir)
+}
+
+// UnknownVersion is recorded for a version-tracked skill whose installed copy
+// declares no version, so any upstream version counts as an update.
+const UnknownVersion = "0.0.0"
+
+// Choice is the outcome of switching an entry to one tracking mode: the
+// entry as it would be recorded, or why it cannot switch.
+type Choice struct {
+	Tracking lock.Tracking
+	Entry    lock.Entry
+	// NeedsUpstream is set for version tracking of a skill whose installed
+	// copy declares no version. Entry then records UnknownVersion, and is
+	// only valid when upstream declares a version.
+	NeedsUpstream bool
+	Err           error
+}
+
+// Choices returns the outcome of switching e to each of Trackings, reading
+// and hashing the installed copy at most once.
+func (in *Installer) Choices(e lock.Entry) []Choice {
+	c := in.installedCopy(e)
+	out := make([]Choice, 0, len(Trackings))
+	for _, t := range Trackings {
+		out = append(out, c.retracked(t))
+	}
+	return out
+}
+
+// Retracked returns the outcome of switching e to tracking mode t. Nothing
+// is reinstalled: the recorded content hash is kept, so local edits are still
+// detected, and only computed from the installed copy when the skill was
+// untracked. Switching to hash tracking keeps the recorded version, so
+// version tracking can be restored; without one, the version comes from the
+// installed copy (see Choice.NeedsUpstream). The lockfile is not changed.
+func (in *Installer) Retracked(e lock.Entry, t lock.Tracking) Choice {
+	return in.installedCopy(e).retracked(t)
+}
+
+// installedCopy switches one entry to other tracking modes, loading and
+// hashing its installed copy only when needed and at most once.
+type installedCopy struct {
+	entry lock.Entry
+	load  func() (skill.Skill, error)
+	hash  func() (string, error)
+}
+
+func (in *Installer) installedCopy(e lock.Entry) installedCopy {
+	load := sync.OnceValues(func() (skill.Skill, error) { return in.InstalledSkill(e) })
+	return installedCopy{
+		entry: e,
+		load:  load,
+		hash: sync.OnceValues(func() (string, error) {
+			s, err := load()
+			if err != nil {
+				return "", err
+			}
+			return skill.Hash(s.Dir)
+		}),
+	}
+}
+
+func (c installedCopy) retracked(t lock.Tracking) Choice {
+	e, upstream, err := c.switched(t)
+	if err != nil {
+		return Choice{Tracking: t, Err: err}
+	}
+	return Choice{Tracking: t, Entry: e, NeedsUpstream: upstream}
+}
+
+func (c installedCopy) switched(t lock.Tracking) (e lock.Entry, needsUpstream bool, err error) {
+	e = c.entry
+	if _, err := lock.ParseTracking(string(t)); err != nil {
+		return e, false, err
+	}
+	switch {
+	case e.Tracking == t:
+		return e, false, nil
+	case e.Pinned:
+		return e, false, fmt.Errorf("%s is %s; unpin it first (faehigkeiten update %s --unpin)", e.Name, PinLabel(e.Version), e.Name)
+	case t == lock.TrackNone:
+		e.Tracking, e.Version, e.Hash = t, "", ""
+		return e, false, nil
+	case e.Source == "":
+		return e, false, fmt.Errorf("%s is managed without a source and cannot be tracked for updates", e.Name)
+	}
+	if t == lock.TrackVersion && e.Version == "" {
+		s, err := c.load()
+		if err != nil {
+			return e, false, err
+		}
+		e.Version = s.Version
+		if !s.HasVersion() {
+			e.Version, needsUpstream = UnknownVersion, true
+		}
+	}
+	if e.Hash == "" {
+		if e.Hash, err = c.hash(); err != nil {
+			return e, false, err
+		}
+	}
+	e.Tracking = t
+	return e, needsUpstream, nil
 }
 
 // License returns the license recorded for an entry.
@@ -645,7 +763,7 @@ func (in *Installer) Adopt(req AdoptRequest) (lock.Entry, error) {
 		entry.Version = f.Version
 		if entry.Version == "" {
 			// Unknown local version: any upstream version counts as an update.
-			entry.Version = "0.0.0"
+			entry.Version = UnknownVersion
 		}
 	case lock.TrackHash, lock.TrackNone:
 	default:

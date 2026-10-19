@@ -105,7 +105,7 @@ func (a *App) EntryLicenseText(ctx context.Context, in *install.Installer, e loc
 	case l == (skill.License{}):
 		// Recorded by an older version: look at the installed copy, then at
 		// the source it came from.
-		s, err := skill.LoadDir(dir, dir)
+		s, err := in.InstalledSkill(e)
 		if err != nil {
 			return "", "", err
 		}
