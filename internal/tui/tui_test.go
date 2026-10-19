@@ -812,6 +812,17 @@ var _ = Describe("TUI", func() {
 			Expect(favourites()).To(BeEmpty())
 		})
 
+		It("sorts the favourites list by name and leaves out the path of root skills", func() {
+			a.Config.AddFavourite(config.Favourite{Name: "zeta", URL: origin, Path: "."})
+			a.Config.AddFavourite(alpha)
+			Expect(a.Config.Save()).To(Succeed())
+			d.keys("down", "down", "down", "down", "down", "enter") // Favourite skills
+			v := d.view()
+			Expect(strings.Index(v, "alpha")).To(BeNumerically("<", strings.Index(v, "zeta")))
+			Expect(v).To(ContainSubstring("origin • skills/alpha"))
+			Expect(v).NotTo(ContainSubstring("origin • ."))
+		})
+
 		It("marks search results and shows only favourites", func() {
 			Expect(testutil.SeedIndex(a.Config, os.Getenv(config.EnvCacheDir), registry.Repo{Name: "fixture/skills", URL: origin})).To(Succeed())
 			d.keys("down", "enter", "skill") // Search skills

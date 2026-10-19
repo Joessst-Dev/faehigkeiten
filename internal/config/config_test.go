@@ -82,6 +82,22 @@ favourites:
 		Expect(cfg.FavouriteList()).To(Equal([]config.Favourite{{Name: "b", URL: "u", Path: "b"}}))
 	})
 
+	It("sorts favourites by name, then by source and path", func() {
+		favs := []config.Favourite{
+			{Name: "pdf", URL: "b", Path: "p"},
+			{Name: "Docx", URL: "a", Path: "d"},
+			{Name: "pdf", URL: "A", Path: "q"},
+			{Name: "pdf", URL: "a", Path: "p"},
+		}
+		config.SortFavourites(favs)
+		Expect(favs).To(Equal([]config.Favourite{
+			{Name: "Docx", URL: "a", Path: "d"},
+			{Name: "pdf", URL: "a", Path: "p"},
+			{Name: "pdf", URL: "A", Path: "q"},
+			{Name: "pdf", URL: "b", Path: "p"},
+		}))
+	})
+
 	It("compares favourite URLs ignoring case", func() {
 		cfg := &config.Config{}
 		Expect(cfg.AddFavourite(config.Favourite{URL: "https://github.com/Acme/Skills", Path: "a"})).To(BeTrue())

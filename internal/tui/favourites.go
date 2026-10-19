@@ -45,9 +45,15 @@ func newFavouritesScreen(e *env) *favouritesScreen {
 }
 
 func (s *favouritesScreen) reload() {
-	var items []pickItem
-	for _, f := range s.env.app.Config.FavouriteList() {
-		items = append(items, pickItem{Title: f.Name, Desc: source.DisplayName(f.URL) + " • " + f.Path, Value: f})
+	favs := s.env.app.Config.FavouriteList()
+	config.SortFavourites(favs)
+	items := make([]pickItem, 0, len(favs))
+	for _, f := range favs {
+		desc := source.DisplayName(f.URL)
+		if f.Path != "." { // not the repository root
+			desc += " • " + f.Path
+		}
+		items = append(items, pickItem{Title: f.Name, Desc: desc, Value: f})
 	}
 	s.list.SetItems(items)
 }

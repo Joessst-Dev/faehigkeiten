@@ -4,6 +4,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"errors"
 	"io/fs"
 	"maps"
@@ -47,10 +48,26 @@ type Favourite struct {
 	Path string `yaml:"path"`
 }
 
-// Is reports whether f is the skill at path in the source url. URLs are
+// FromSource reports whether f is a skill of the source url. URLs are
 // compared ignoring case, since GitHub owner and repository names are.
+func (f Favourite) FromSource(url string) bool {
+	return strings.EqualFold(f.URL, url)
+}
+
+// Is reports whether f is the skill at path in the source url.
 func (f Favourite) Is(url, path string) bool {
-	return strings.EqualFold(f.URL, url) && f.Path == path
+	return f.FromSource(url) && f.Path == path
+}
+
+// SortFavourites sorts favourites by name, then by source and path.
+func SortFavourites(favs []Favourite) {
+	slices.SortFunc(favs, func(a, b Favourite) int {
+		return cmp.Or(
+			strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)),
+			strings.Compare(strings.ToLower(a.URL), strings.ToLower(b.URL)),
+			strings.Compare(a.Path, b.Path),
+		)
+	})
 }
 
 // Config is the persisted user configuration. Its fields may change while

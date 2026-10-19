@@ -950,6 +950,7 @@ search and install --list, or with F in the interactive UI.`,
 				fmt.Fprintln(out, "no favourites")
 				return nil
 			}
+			config.SortFavourites(favs)
 			tw := newTable(out, "NAME\tREPO\tPATH")
 			for _, f := range favs {
 				fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, source.DisplayName(f.URL), f.Path)
@@ -970,7 +971,7 @@ func findFavourite(favs []config.Favourite, src, sel string) (config.Favourite, 
 	}
 	var named []config.Favourite
 	for _, f := range favs {
-		if strings.EqualFold(f.Name, sel) && f.Is(src, f.Path) {
+		if strings.EqualFold(f.Name, sel) && f.FromSource(src) {
 			named = append(named, f)
 		}
 	}
