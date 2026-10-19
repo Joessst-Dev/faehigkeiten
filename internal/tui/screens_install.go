@@ -581,13 +581,12 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 		case errors.Is(err, fs.ErrExist):
 			// Created elsewhere since the list was loaded: show its skills,
 			// or why it cannot be loaded.
-			p := s.in.Lock.Path()
 			s.reload()
-			s.notify(p+" already exists", nil)
+			s.notify("the lockfile already exists", nil)
 		case err != nil:
 			s.notify("", err)
 		default:
-			s.notify("created "+s.in.Lock.Path(), nil)
+			s.notify("created the lockfile", nil)
 		}
 	case "u":
 		return push(newUpdatesScreen(s.env))

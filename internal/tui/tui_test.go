@@ -462,7 +462,7 @@ var _ = Describe("TUI", func() {
 		d.keys("down", "down", "down", "enter") // Installed skills
 		Expect(d.view()).To(ContainSubstring("(not created yet)"))
 		d.keys("i")
-		Expect(d.view()).To(ContainSubstring("created "))
+		Expect(d.view()).To(ContainSubstring("created the lockfile"))
 		Expect(lockfile().Exists()).To(BeTrue())
 		Expect(d.view()).NotTo(ContainSubstring("(not created yet)"))
 	})
