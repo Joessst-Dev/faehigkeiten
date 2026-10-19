@@ -56,6 +56,7 @@ type menuScreen struct {
 const (
 	menuBrowse    = "browse"
 	menuSearch    = "search"
+	menuFavs      = "favourites"
 	menuAdd       = "add"
 	menuInstalled = "installed"
 	menuUpdates   = "updates"
@@ -71,6 +72,7 @@ func newMenu(e *env) *menuScreen {
 		{Title: "Add repository", Desc: "Install from any GitHub repo, git URL or local directory", Value: menuAdd},
 		{Title: "Installed skills", Desc: "Show and remove skills installed in the current target", Value: menuInstalled},
 		{Title: "Check for updates", Desc: "Compare tracked skills by version or content hash", Value: menuUpdates},
+		{Title: "Favourite skills", Desc: "Skills you marked with f, from every repository", Value: menuFavs},
 		{Title: "Change target", Desc: "Switch between a project directory and the global scope", Value: menuTarget},
 		{Title: "Settings", Desc: "Default agents, agent directories and repositories", Value: menuSettings},
 		{Title: "Quit", Value: menuQuit},
@@ -102,6 +104,8 @@ func (s *menuScreen) Update(msg tea.Msg) tea.Cmd {
 			return push(newReposScreen(s.env))
 		case menuSearch:
 			return push(newSearchScreen(s.env))
+		case menuFavs:
+			return push(newFavouritesScreen(s.env))
 		case menuAdd:
 			return push(newAddRepoScreen(s.env))
 		case menuInstalled:

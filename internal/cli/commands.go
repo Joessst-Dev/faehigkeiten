@@ -34,6 +34,7 @@ func newInstallCommand() *cobra.Command {
 		all      bool
 		force    bool
 		listOnly bool
+		favsOnly bool
 		versions bool
 	)
 	cmd := &cobra.Command{
@@ -53,11 +54,15 @@ Tracking modes:
   none     never check for updates (default for unversioned skills)`,
 		Example: `  faehigkeiten install anthropics/skills pdf docx
   faehigkeiten install anthropics/skills --list
+  faehigkeiten install anthropics/skills --list --favourites
   faehigkeiten install anthropics/skills pdf --versions
   faehigkeiten install anthropics/skills pdf@1.2.0
   faehigkeiten install ./my-skills my-skill --global --agent claude-code,codex --track hash`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if favsOnly && !listOnly {
+				return errors.New("--favourites needs --list")
+			}
 			a, err := app.New()
 			if err != nil {
 				return err
@@ -68,6 +73,9 @@ Tracking modes:
 			}
 			out := cmd.OutOrStdout()
 			if listOnly {
+				if favsOnly {
+					skills = slices.DeleteFunc(skills, func(s skill.Skill) bool { return !a.Config.IsFavourite(co.URL, s.Path) })
+				}
 				printSkills(out, skills)
 				return nil
 			}
@@ -152,6 +160,7 @@ Tracking modes:
 	cmd.Flags().BoolVar(&all, "all", false, "install every skill in the source")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "overwrite existing skill directories")
 	cmd.Flags().BoolVarP(&listOnly, "list", "l", false, "list skills in the source without installing")
+	cmd.Flags().BoolVar(&favsOnly, "favourites", false, "with --list, only show favourite skills")
 	cmd.Flags().BoolVar(&versions, "versions", false, "list the versions of a skill without installing")
 	cmd.MarkFlagsMutuallyExclusive("all", "versions")
 	cmd.MarkFlagsMutuallyExclusive("list", "versions")
@@ -266,25 +275,37 @@ func truncate(s string, n int) string {
 }
 
 func newListCommand() *cobra.Command {
-	var scope scopeFlags
+	var (
+		scope    scopeFlags
+		favsOnly bool
+	)
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List installed skills",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, in, err := scope.open()
+			a, in, err := scope.open()
 			if err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()
-			found := in.Unmanaged()
-			if len(in.Lock.Skills) == 0 && len(found) == 0 {
+			entries, found := in.Lock.Skills, in.Unmanaged()
+			if favsOnly {
+				// Unmanaged skills have no source and cannot be favourites.
+				entries = slices.DeleteFunc(slices.Clone(entries), func(e lock.Entry) bool { return !a.Config.IsFavourite(e.Source, e.Path) })
+				found = nil
+				if len(entries) == 0 {
+					fmt.Fprintln(out, "no favourite skills installed")
+					return nil
+				}
+			}
+			if len(entries) == 0 && len(found) == 0 {
 				fmt.Fprintln(out, "no skills installed")
 				return nil
 			}
 			tw := newTable(out, "NAME\tTRACKING\tLICENSE\tAGENTS\tSOURCE")
-			for _, e := range in.Lock.Skills {
+			for _, e := range entries {
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Name, install.Describe(e), licenseColumn(install.License(e).Label()), strings.Join(e.Agents, ","), source.DisplayName(e.Source))
 			}
 			for _, f := range found {
@@ -294,6 +315,7 @@ func newListCommand() *cobra.Command {
 		},
 	}
 	scope.register(cmd)
+	cmd.Flags().BoolVar(&favsOnly, "favourites", false, "only show favourite skills")
 	return cmd
 }
 
@@ -717,9 +739,10 @@ reported, the others are saved, and the exit status is 1.`,
 
 func newSearchCommand() *cobra.Command {
 	var (
-		refresh bool
-		remote  bool
-		limit   int
+		refresh  bool
+		remote   bool
+		favsOnly bool
+		limit    int
 	)
 	cmd := &cobra.Command{
 		Use:   "search <query>",
@@ -732,6 +755,9 @@ func newSearchCommand() *cobra.Command {
 			}
 			q := strings.Join(args, " ")
 			out := cmd.OutOrStdout()
+			if remote && favsOnly {
+				return errors.New("--favourites cannot be combined with --remote")
+			}
 			if remote {
 				hits, err := a.Remote.Search(cmd.Context(), q, limit)
 				if err != nil {
@@ -752,6 +778,9 @@ func newSearchCommand() *cobra.Command {
 				return err
 			}
 			hits := idx.Search(q)
+			if favsOnly {
+				hits = slices.DeleteFunc(hits, func(h registry.Entry) bool { return !a.Config.IsFavourite(h.Repo.URL, h.Path) })
+			}
 			if len(hits) > limit {
 				hits = hits[:limit]
 			}
@@ -764,6 +793,7 @@ func newSearchCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&refresh, "refresh", false, "re-fetch all repositories before searching")
 	cmd.Flags().BoolVar(&remote, "remote", false, "search the skills.sh directory instead of known repositories")
+	cmd.Flags().BoolVar(&favsOnly, "favourites", false, "only show favourite skills")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 30, "maximum number of results")
 	return cmd
 }
@@ -835,6 +865,126 @@ func newRepoCommand() *cobra.Command {
 	}
 	cmd.AddCommand(add, rm, list)
 	return cmd
+}
+
+func newFavouriteCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "favourite",
+		Aliases: []string{"fav", "favorite"},
+		Short:   "Mark skills as favourites",
+		Long: `Mark skills as favourites to find them again quickly. Favourites are
+stored in the config file. Show only favourites with --favourites on list,
+search and install --list, or with F in the interactive UI.`,
+		Example: `  faehigkeiten favourite add anthropics/skills pdf docx
+  faehigkeiten favourite list
+  faehigkeiten favourite remove anthropics/skills pdf`,
+	}
+	var ref string
+	add := &cobra.Command{
+		Use:   "add <source> <skill>...",
+		Short: "Mark skills of a source as favourites",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			a, err := app.New()
+			if err != nil {
+				return err
+			}
+			co, skills, err := a.Load(cmd.Context(), args[0], ref, false)
+			if err != nil {
+				return err
+			}
+			selected, err := app.Select(skills, args[1:])
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			for _, s := range selected {
+				if a.Config.AddFavourite(config.Favourite{Name: s.Name, URL: co.URL, Ref: ref, Path: s.Path}) {
+					fmt.Fprintln(out, "added", s.Name)
+				} else {
+					fmt.Fprintf(out, "%s is already a favourite\n", s.Name)
+				}
+			}
+			return a.Config.Save()
+		},
+	}
+	add.Flags().StringVar(&ref, "ref", "", "branch or tag of the source")
+	rm := &cobra.Command{
+		Use:     "remove <source> <skill>...",
+		Aliases: []string{"rm"},
+		Short:   "Unmark favourite skills by name or path",
+		Args:    cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			src, err := source.Normalize(args[0])
+			if err != nil {
+				src = args[0]
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			for _, n := range args[1:] {
+				f, err := findFavourite(cfg.FavouriteList(), src, n)
+				if err != nil {
+					return err
+				}
+				cfg.RemoveFavourite(f.URL, f.Path)
+				fmt.Fprintln(cmd.OutOrStdout(), "removed", f.Name)
+			}
+			return cfg.Save()
+		},
+	}
+	list := &cobra.Command{
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List favourite skills",
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			favs := cfg.FavouriteList()
+			if len(favs) == 0 {
+				fmt.Fprintln(out, "no favourites")
+				return nil
+			}
+			tw := newTable(out, "NAME\tREPO\tPATH")
+			for _, f := range favs {
+				fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, source.DisplayName(f.URL), f.Path)
+			}
+			return tw.Flush()
+		},
+	}
+	cmd.AddCommand(add, rm, list)
+	return cmd
+}
+
+// findFavourite returns the favourite in the source src named by sel, a
+// skill path or a name. A name shared by several skills is an error.
+func findFavourite(favs []config.Favourite, src, sel string) (config.Favourite, error) {
+	p := strings.Trim(sel, "/")
+	if i := slices.IndexFunc(favs, func(f config.Favourite) bool { return f.Is(src, p) }); i >= 0 {
+		return favs[i], nil
+	}
+	var named []config.Favourite
+	for _, f := range favs {
+		if strings.EqualFold(f.Name, sel) && f.Is(src, f.Path) {
+			named = append(named, f)
+		}
+	}
+	switch len(named) {
+	case 0:
+		return config.Favourite{}, fmt.Errorf("%s is not a favourite in %s", sel, src)
+	case 1:
+		return named[0], nil
+	}
+	paths := make([]string, len(named))
+	for i, f := range named {
+		paths[i] = f.Path
+	}
+	return config.Favourite{}, fmt.Errorf("several favourites in %s are named %s; name one by its path: %s", src, sel, strings.Join(paths, ", "))
 }
 
 func newAgentsCommand() *cobra.Command {

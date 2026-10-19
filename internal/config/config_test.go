@@ -31,11 +31,12 @@ var _ = Describe("Config", func() {
 		Expect(cfg.RepoList()).To(BeEmpty())
 	})
 
-	It("round-trips repos, default agents and agent overrides", func() {
+	It("round-trips repos, default agents, agent overrides and favourites", func() {
 		cfg := &config.Config{}
 		cfg.SetDefaultAgents([]string{"claude-code"})
 		cfg.SetAgent("cursor", config.AgentOverride{ProjectDir: ".cursor/rules"})
 		Expect(cfg.AddRepo(config.Repo{Name: "mine", URL: "https://example.com/a.git", Ref: "dev"})).To(BeTrue())
+		Expect(cfg.AddFavourite(config.Favourite{Name: "pdf", URL: "https://example.com/a.git", Path: "skills/pdf"})).To(BeTrue())
 		Expect(cfg.Save()).To(Succeed())
 		p, err := config.Path()
 		Expect(err).NotTo(HaveOccurred())
@@ -50,6 +51,10 @@ default_agents:
 agents:
   cursor:
     project_dir: .cursor/rules
+favourites:
+  - name: pdf
+    url: https://example.com/a.git
+    path: skills/pdf
 `))
 
 		loaded, err := config.Load()
@@ -63,6 +68,27 @@ agents:
 		Expect(cfg.AddRepo(config.Repo{URL: "u", Name: "again"})).To(BeFalse())
 		Expect(cfg.RemoveRepo("u")).To(BeTrue())
 		Expect(cfg.RemoveRepo("u")).To(BeFalse())
+	})
+
+	It("deduplicates and removes favourites by URL and path", func() {
+		cfg := &config.Config{}
+		Expect(cfg.AddFavourite(config.Favourite{Name: "a", URL: "u", Path: "a"})).To(BeTrue())
+		Expect(cfg.AddFavourite(config.Favourite{Name: "again", URL: "u", Path: "a", Ref: "dev"})).To(BeFalse())
+		Expect(cfg.AddFavourite(config.Favourite{Name: "b", URL: "u", Path: "b"})).To(BeTrue())
+		Expect(cfg.IsFavourite("u", "a")).To(BeTrue())
+		Expect(cfg.IsFavourite("v", "a")).To(BeFalse())
+		Expect(cfg.RemoveFavourite("u", "a")).To(BeTrue())
+		Expect(cfg.RemoveFavourite("u", "a")).To(BeFalse())
+		Expect(cfg.FavouriteList()).To(Equal([]config.Favourite{{Name: "b", URL: "u", Path: "b"}}))
+	})
+
+	It("compares favourite URLs ignoring case", func() {
+		cfg := &config.Config{}
+		Expect(cfg.AddFavourite(config.Favourite{URL: "https://github.com/Acme/Skills", Path: "a"})).To(BeTrue())
+		Expect(cfg.AddFavourite(config.Favourite{URL: "https://github.com/acme/skills", Path: "a"})).To(BeFalse())
+		Expect(cfg.IsFavourite("https://github.com/ACME/skills", "a")).To(BeTrue())
+		Expect(cfg.IsFavourite("https://github.com/acme/skills", "A")).To(BeFalse(), "paths are case-sensitive")
+		Expect(cfg.RemoveFavourite("https://github.com/acme/skills", "a")).To(BeTrue())
 	})
 
 	It("updates repos unless the new URL is taken", func() {
@@ -97,6 +123,7 @@ agents:
 		o := &config.Config{}
 		o.AddRepo(config.Repo{URL: "b"})
 		o.SetAgent("y", config.AgentOverride{Name: "Y"})
+		o.AddFavourite(config.Favourite{URL: "b", Path: "p"})
 		cfg.Replace(o)
 		Expect(cfg).To(Equal(o))
 		o.AddRepo(config.Repo{URL: "c"})

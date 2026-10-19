@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/cursor"
@@ -20,6 +21,8 @@ type pickItem struct {
 	// NoCheck renders this row of a multi-select list without a checkbox,
 	// like a row of a single-select list.
 	NoCheck bool
+	// Starred marks a favourite skill.
+	Starred bool
 	Value   any
 }
 
@@ -33,6 +36,7 @@ type pickList struct {
 	filter   textinput.Model
 	editing  bool
 	emptyMsg string
+	favsOnly bool // show only starred items
 }
 
 func newPickList(items []pickItem, multi bool) *pickList {
@@ -54,6 +58,9 @@ func (l *pickList) applyFilter() {
 	q := strings.ToLower(strings.TrimSpace(l.filter.Value()))
 	l.visible = l.visible[:0]
 	for i, it := range l.items {
+		if l.favsOnly && !it.Starred {
+			continue
+		}
 		if q == "" || strings.Contains(strings.ToLower(it.Title+" "+it.Desc+" "+it.Badge), q) {
 			l.visible = append(l.visible, i)
 		}
@@ -62,6 +69,28 @@ func (l *pickList) applyFilter() {
 		l.cursor = max(0, len(l.visible)-1)
 	}
 	l.offset = 0
+}
+
+// Refilter applies the filter again after items changed in place.
+// The cursor stays on its item while that is visible.
+func (l *pickList) Refilter() {
+	cur := -1
+	if len(l.visible) > 0 {
+		cur = l.visible[l.cursor]
+	}
+	l.applyFilter()
+	if vi := slices.Index(l.visible, cur); vi >= 0 {
+		l.cursor = vi
+	}
+}
+
+// FavouritesOnly reports whether the list shows only starred items.
+func (l *pickList) FavouritesOnly() bool { return l.favsOnly }
+
+// SetFavouritesOnly shows only starred items, or all items again.
+func (l *pickList) SetFavouritesOnly(v bool) {
+	l.favsOnly = v
+	l.Refilter()
 }
 
 // Current returns the item under the cursor.
@@ -201,18 +230,31 @@ var (
 	cursorStyle   = lipgloss.NewStyle().Foreground(accent).Bold(true)
 	disabledStyle = lipgloss.NewStyle().Foreground(subtle).Faint(true)
 	badgeStyle    = lipgloss.NewStyle().Foreground(warnColor)
+	starStyle     = lipgloss.NewStyle().Foreground(warnColor)
 )
+
+// star prefixes favourite skills.
+const star = "★ "
 
 // View renders the list in at most height lines and width columns.
 func (l *pickList) View(width, height int) string {
 	var b strings.Builder
+	if l.favsOnly {
+		b.WriteString(starStyle.Render(star + "favourites only"))
+		b.WriteString("\n")
+		height--
+	}
 	if l.editing || l.filter.Value() != "" {
 		b.WriteString(l.filter.View())
 		b.WriteString("\n")
 		height--
 	}
 	if len(l.visible) == 0 {
-		b.WriteString(subtleStyle.Render(l.emptyMsg))
+		msg := l.emptyMsg
+		if l.favsOnly && len(l.items) > 0 {
+			msg = "no favourites here — press f to mark one"
+		}
+		b.WriteString(subtleStyle.Render(msg))
 		return b.String()
 	}
 	rowsPer := 2
@@ -243,6 +285,9 @@ func (l *pickList) View(width, height int) string {
 			title = disabledStyle.Render(title)
 		case vi == l.cursor:
 			title = cursorStyle.Render(title)
+		}
+		if it.Starred {
+			title = starStyle.Render(star) + title
 		}
 		line := prefix + box + title
 		if it.Badge != "" {

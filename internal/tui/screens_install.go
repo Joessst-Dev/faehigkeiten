@@ -12,6 +12,7 @@ import (
 
 	"github.com/Joessst-Dev/faehigkeiten/internal/agent"
 	"github.com/Joessst-Dev/faehigkeiten/internal/app"
+	"github.com/Joessst-Dev/faehigkeiten/internal/config"
 	"github.com/Joessst-Dev/faehigkeiten/internal/install"
 	"github.com/Joessst-Dev/faehigkeiten/internal/lock"
 	"github.com/Joessst-Dev/faehigkeiten/internal/skill"
@@ -427,11 +428,11 @@ func (s *installedScreen) Help() string {
 	}
 	if it, ok := s.list.Current(); ok {
 		if _, unmanaged := it.Value.(install.Found); unmanaged {
-			return init + "space select • a select all • m manage • l license • d remove • u check updates • t change target • / filter"
+			return init + "space select • a select all • m manage • l license • d remove • u check updates • t change target • F favourites only • / filter"
 		}
-		return init + "c change tracking • l license • d remove • u check updates • t change target • / filter"
+		return init + "c change tracking • l license • f favourite • d remove • u check updates • t change target • F favourites only • / filter"
 	}
-	return init + "u check updates • t change target • / filter"
+	return init + "u check updates • t change target • F favourites only • / filter"
 }
 
 func (s *installedScreen) reload() {
@@ -458,6 +459,7 @@ func (s *installedScreen) reload() {
 			Badge:   install.Describe(e),
 			Desc:    withLicense(source.DisplayName(e.Source)+" • "+strings.Join(e.Agents, ", "), install.License(e).Label()),
 			NoCheck: true,
+			Starred: s.env.app.Config.IsFavourite(e.Source, e.Path),
 			Value:   e,
 		})
 	}
@@ -588,6 +590,19 @@ func (s *installedScreen) Update(msg tea.Msg) tea.Cmd {
 		default:
 			s.notify("created the lockfile", nil)
 		}
+	case "f":
+		it, ok := s.list.Current()
+		if !ok {
+			return nil
+		}
+		e, ok := it.Value.(lock.Entry)
+		if !ok || e.Source == "" {
+			s.notify("", errors.New("manage the skill with a source to mark it as a favourite"))
+			return nil
+		}
+		s.notify(toggleStar(s.env, s.list, it, config.Favourite{Name: e.Name, URL: e.Source, Ref: e.Ref, Path: e.Path}))
+	case "F":
+		s.list.SetFavouritesOnly(!s.list.FavouritesOnly())
 	case "u":
 		return push(newUpdatesScreen(s.env))
 	case "t":
