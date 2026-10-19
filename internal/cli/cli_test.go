@@ -314,9 +314,18 @@ var _ = Describe("CLI", func() {
 		Expect(alpha.Tracking).To(Equal(lock.TrackHash), "nothing is saved")
 
 		code, out, errOut = run("track", "version", "--all", "-p", project)
-		Expect(code).To(Equal(0), errOut)
+		Expect(code).To(Equal(1), "beta could not switch")
 		Expect(out).To(ContainSubstring("alpha: hash"))
 		Expect(errOut).To(ContainSubstring("skipping beta"))
+		Expect(errOut).To(ContainSubstring("1 of 2 skill(s) could not switch to version tracking"))
+		lf, err = lock.Load(filepath.Join(project, lock.FileName))
+		Expect(err).NotTo(HaveOccurred())
+		alpha, _ = lf.Get("alpha")
+		Expect(alpha.Tracking).To(Equal(lock.TrackVersion), "the skills that switched are saved")
+
+		code, out, errOut = run("track", "hash", "alpha", "alpha", "-p", project)
+		Expect(code).To(Equal(0), errOut)
+		Expect(strings.Count(out, "alpha")).To(Equal(1), "a skill named twice is switched once")
 
 		code, _, errOut = run("track", "none", "missing", "-p", project)
 		Expect(code).To(Equal(1))
@@ -334,7 +343,7 @@ var _ = Describe("CLI", func() {
 		code, _, errOut = run("track", "version", "--all", "-p", project)
 		Expect(code).To(Equal(1))
 		Expect(errOut).To(ContainSubstring("skipping beta: skill beta has no version, installed or upstream"))
-		Expect(errOut).To(ContainSubstring("no skill can use version tracking"))
+		Expect(errOut).To(ContainSubstring("1 of 1 skill(s) could not switch to version tracking"))
 
 		Expect(testutil.Commit(repo, origin, map[string]string{
 			"skills/beta/SKILL.md": testutil.SkillMD("beta", "Unversioned", "1.2.0"),

@@ -635,8 +635,9 @@ an update. Skills that were untracked use their installed content as the
 baseline. The next check compares against the new mode.
 
 Pinned skills always use version tracking; unpin them first with
-"faehigkeiten update <skill> --unpin". With --all, skills that cannot use the
-mode are skipped and reported.`,
+"faehigkeiten update <skill> --unpin". If a named skill cannot switch,
+nothing is changed. With --all, skills that cannot switch are skipped and
+reported, the others are saved, and the exit status is 1.`,
 		Example: `  faehigkeiten track hash pdf
   faehigkeiten track version --all
   faehigkeiten track none my-notes`,
@@ -653,7 +654,12 @@ mode are skipped and reported.`,
 			if err != nil {
 				return err
 			}
-			names := args[1:]
+			var names []string
+			for _, name := range args[1:] {
+				if !slices.Contains(names, name) {
+					names = append(names, name)
+				}
+			}
 			if all {
 				if len(in.Lock.Skills) == 0 {
 					return fmt.Errorf("no managed skills in this target (see \"faehigkeiten adopt\")")
@@ -663,10 +669,11 @@ mode are skipped and reported.`,
 				}
 			}
 			// Every skill is switched before anything is reported, so an
-			// error leaves the lockfile unsaved and nothing claimed as done.
+			// error for a named skill leaves the lockfile unsaved and nothing
+			// claimed as done.
 			r := a.NewRetracker(in)
 			var lines []string
-			changed := false
+			changed, skipped := false, 0
 			for _, name := range names {
 				prev, ok := in.Lock.Get(name)
 				if !ok {
@@ -681,15 +688,13 @@ mode are skipped and reported.`,
 				case err != nil && !all:
 					return err
 				case err != nil:
+					skipped++
 					fmt.Fprintf(cmd.ErrOrStderr(), "skipping %s: %v\n", name, err)
 				default:
 					in.Lock.Upsert(e)
 					changed = true
 					lines = append(lines, fmt.Sprintf("%s: %s → %s", name, install.Describe(prev), install.Describe(e)))
 				}
-			}
-			if len(lines) == 0 {
-				return fmt.Errorf("no skill can use %s tracking", mode)
 			}
 			if changed {
 				if err := in.Lock.Save(); err != nil {
@@ -698,6 +703,9 @@ mode are skipped and reported.`,
 			}
 			for _, l := range lines {
 				fmt.Fprintln(cmd.OutOrStdout(), l)
+			}
+			if skipped > 0 {
+				return fmt.Errorf("%d of %d skill(s) could not switch to %s tracking", skipped, len(names), mode)
 			}
 			return nil
 		},

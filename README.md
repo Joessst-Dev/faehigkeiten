@@ -126,8 +126,9 @@ installed `SKILL.md`. If the installed copy has no version, the source is fetche
 declares one, the skill is tracked from `0.0.0` (as when adopting such a copy), so the upstream version
 is offered as an update. Switching an untracked skill to `version` or `hash` takes its current installed
 content as the baseline. Pinned skills always use version tracking; unpin them first. With named
-skills, nothing changes unless every one of them can switch; with `--all`, skills that cannot use the
-mode (for example `version` for a skill without one) are skipped. The TUI shows modes a skill cannot
+skills, nothing changes unless every one of them can switch; with `--all`, skills that cannot switch
+(for example to `version` when neither the installed copy nor upstream has one) are skipped and
+reported, the others are saved, and the command exits with status 1. The TUI shows modes a skill cannot
 switch to greyed out, with the reason.
 
 The lockfile also stores a hash of the installed content of every tracked skill. If you edit an

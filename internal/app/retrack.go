@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -12,60 +11,55 @@ import (
 	"github.com/Joessst-Dev/faehigkeiten/internal/source"
 )
 
-// Retracker switches installed skills to other tracking modes. Unlike
-// install.Installer.Retracked, it also switches a skill whose installed copy
-// declares no version to version tracking, when upstream declares one. Each
-// source is fetched at most once.
+// Retracker switches installed skills to other tracking modes, checking
+// upstream for the choices that need it (see install.Choice.NeedsUpstream).
+// Each source is fetched at most once; it is safe for concurrent use.
 type Retracker struct {
 	app       *App
 	in        *install.Installer
-	checkouts map[sourceRef]fetched
-}
-
-type sourceRef struct{ src, ref string }
-
-type fetched struct {
-	co  *source.Checkout
-	err error
+	checkouts memo[*source.Checkout]
 }
 
 // NewRetracker returns a retracker for the skills of in.
 func (a *App) NewRetracker(in *install.Installer) *Retracker {
-	return &Retracker{app: a, in: in, checkouts: map[sourceRef]fetched{}}
+	return &Retracker{app: a, in: in}
 }
 
 // Retracked returns e as it is recorded after switching it to tracking mode
-// t, or why it cannot switch. A skill without a version that upstream now
-// versions records install.UnknownVersion, like adopting such a copy, so any
-// upstream version is offered as an update. The lockfile is not changed.
+// t, or why it cannot switch. The lockfile is not changed.
 func (r *Retracker) Retracked(ctx context.Context, e lock.Entry, t lock.Tracking) (lock.Entry, error) {
-	next, err := r.in.Retracked(e, t)
-	if !errors.Is(err, install.ErrNoVersion) {
-		return next, err
+	return r.Confirm(ctx, r.in.Retracked(e, t))
+}
+
+// Confirm returns the entry of c, or why it cannot switch. A choice that
+// needs upstream is only valid when upstream declares a version: the skill
+// then records install.UnknownVersion, like adopting such a copy, so any
+// upstream version is offered as an update.
+func (r *Retracker) Confirm(ctx context.Context, c install.Choice) (lock.Entry, error) {
+	if c.Err != nil || !c.NeedsUpstream {
+		return c.Entry, c.Err
 	}
-	up, upErr := r.upstream(ctx, e)
-	if upErr != nil {
-		return lock.Entry{}, fmt.Errorf("%w (checking upstream: %v)", err, upErr)
+	e := c.Entry
+	up, err := r.upstream(ctx, e)
+	if err != nil {
+		return lock.Entry{}, fmt.Errorf("skill %s has no version installed; checking upstream: %w", e.Name, err)
 	}
 	if !up.HasVersion() {
 		return lock.Entry{}, fmt.Errorf("skill %s has no version, installed or upstream; use hash tracking instead", e.Name)
 	}
-	e.Version = install.UnknownVersion
-	return r.in.Retracked(e, t)
+	return e, nil
 }
 
 // upstream reads the SKILL.md of e at the tip of its source.
 func (r *Retracker) upstream(ctx context.Context, e lock.Entry) (skill.Skill, error) {
-	k := sourceRef{e.Source, e.Ref}
-	f, ok := r.checkouts[k]
-	if !ok {
-		f.co, f.err = r.app.Sources.Fetch(ctx, e.Source, e.Ref, true)
-		r.checkouts[k] = f
+	// NUL cannot appear in a URL or ref, so keys cannot collide.
+	co, err := r.checkouts.get(ctx, e.Source+"\x00"+e.Ref, func() (*source.Checkout, error) {
+		return r.app.Sources.Fetch(ctx, e.Source, e.Ref, true)
+	})
+	if err != nil {
+		return skill.Skill{}, err
 	}
-	if f.err != nil {
-		return skill.Skill{}, f.err
-	}
-	dir, err := f.co.SkillDir(e.Path)
+	dir, err := co.SkillDir(e.Path)
 	if err != nil {
 		return skill.Skill{}, err
 	}

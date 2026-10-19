@@ -189,6 +189,9 @@ func (f *File) Init() error {
 		err = cerr
 	}
 	if err != nil {
+		// Do not leave a partial file that later runs would refuse to
+		// initialize and fail to load.
+		os.Remove(f.path)
 		return err
 	}
 	f.exists = true

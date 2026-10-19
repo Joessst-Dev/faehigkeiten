@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -96,8 +97,30 @@ var _ = Describe("Retracker", func() {
 		e := installHashed("beta")
 		e.Source = filepath.Join(origin, "missing")
 		_, err := a.NewRetracker(in).Retracked(ctx, e, lock.TrackVersion)
-		Expect(err).To(MatchError(install.ErrNoVersion))
-		Expect(err).To(MatchError(ContainSubstring("checking upstream")))
+		Expect(err).To(MatchError(ContainSubstring("has no version installed; checking upstream")))
+	})
+
+	It("confirms a choice without computing it again", func() {
+		e := installHashed("beta")
+		Expect(testutil.WriteFiles(origin, map[string]string{
+			"skills/beta/SKILL.md": testutil.SkillMD("beta", "Unversioned", "1.2.0"),
+		})).To(Succeed())
+		c := in.Retracked(e, lock.TrackVersion)
+		Expect(c.NeedsUpstream).To(BeTrue())
+		Expect(c.Entry.Version).To(Equal(install.UnknownVersion))
+		got, err := a.NewRetracker(in).Confirm(ctx, c)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(got).To(Equal(c.Entry))
+	})
+
+	It("passes on choices that need no upstream check and their errors", func() {
+		e := installHashed("alpha")
+		e.Source = filepath.Join(origin, "missing") // never fetched
+		r := a.NewRetracker(in)
+		c := in.Retracked(e, lock.TrackNone)
+		Expect(r.Confirm(ctx, c)).To(Equal(c.Entry))
+		_, err := r.Confirm(ctx, install.Choice{Err: errors.New("boom")})
+		Expect(err).To(MatchError("boom"))
 	})
 
 	It("leaves other modes to the installer", func() {

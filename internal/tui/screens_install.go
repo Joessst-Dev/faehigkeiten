@@ -651,39 +651,51 @@ type trackingScreen struct {
 	onDone func(msg string)
 }
 
-// retrackedMsg carries the entry switched after checking upstream.
-type retrackedMsg struct {
-	entry lock.Entry
-	err   error
+type (
+	// choicesMsg carries the tracking modes the entry can switch to.
+	choicesMsg []install.Choice
+	// retrackedMsg carries the entry switched after checking upstream.
+	retrackedMsg struct {
+		entry lock.Entry
+		err   error
+	}
+)
+
+func newTrackingScreen(e *env, in *install.Installer, entry lock.Entry, onDone func(string)) *trackingScreen {
+	return &trackingScreen{env: e, in: in, entry: entry, list: newPickList(nil, false), spin: newSpinner(), onDone: onDone}
 }
 
-// newTrackingScreen lists every tracking mode; the ones entry cannot switch
-// to are disabled and say why. Version tracking of a skill whose installed
-// copy has no version stays enabled: choosing it checks upstream.
-func newTrackingScreen(e *env, in *install.Installer, entry lock.Entry, onDone func(string)) *trackingScreen {
-	choices := in.Choices(entry)
+// Init works out the choices in the background: it may hash the installed
+// copy.
+func (s *trackingScreen) Init() tea.Cmd {
+	s.busy = "reading the installed copy"
+	in, entry := s.in, s.entry
+	return tea.Batch(s.spin.Tick, async(s, func() tea.Msg { return choicesMsg(in.Choices(entry)) }))
+}
+
+// setChoices lists every tracking mode; the ones the entry cannot switch to
+// are disabled and say why.
+func (s *trackingScreen) setChoices(choices []install.Choice) {
 	items := make([]pickItem, 0, len(choices))
 	for _, c := range choices {
 		it := pickItem{Title: trackingLabel(c.Tracking), Value: c}
 		switch {
-		case errors.Is(c.Err, install.ErrNoVersion):
-			it.Desc = "No version installed; checks whether upstream declares one and offers it as an update"
 		case c.Err != nil:
 			it.Disabled, it.Desc = true, c.Err.Error()
+		case c.NeedsUpstream:
+			it.Desc = "No version installed; checks whether upstream declares one and offers it as an update"
 		default:
 			it.Desc = trackingDesc(c.Tracking, skill.Skill{Version: c.Entry.Version})
 		}
-		if c.Tracking == entry.Tracking {
+		if c.Tracking == s.entry.Tracking {
 			it.Badge = "current"
 		}
 		items = append(items, it)
 	}
-	l := newPickList(items, false)
-	l.Focus(func(it pickItem) bool { return it.Value.(install.Choice).Tracking == entry.Tracking })
-	return &trackingScreen{env: e, in: in, entry: entry, list: l, spin: newSpinner(), onDone: onDone}
+	s.list.SetItems(items)
+	s.list.Focus(func(it pickItem) bool { return it.Value.(install.Choice).Tracking == s.entry.Tracking })
 }
 
-func (s *trackingScreen) Init() tea.Cmd { return nil }
 func (s *trackingScreen) Title() string { return s.entry.Name + " tracking" }
 func (s *trackingScreen) Help() string {
 	if s.busy != "" {
@@ -696,6 +708,10 @@ func (s *trackingScreen) Update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case spinner.TickMsg:
 		return tick(&s.spin, s.busy != "", msg)
+	case choicesMsg:
+		s.busy = ""
+		s.setChoices(msg)
+		return nil
 	case retrackedMsg:
 		s.busy = ""
 		if msg.err != nil {
@@ -723,11 +739,11 @@ func (s *trackingScreen) Update(msg tea.Msg) tea.Cmd {
 		switch {
 		case c.Tracking == s.entry.Tracking:
 			return pop
-		case errors.Is(c.Err, install.ErrNoVersion):
+		case c.NeedsUpstream:
 			s.busy, s.err = "checking upstream for a version", nil
-			r, ctx, entry := s.env.app.NewRetracker(s.in), s.env.ctx, s.entry
+			r, ctx := s.env.app.NewRetracker(s.in), s.env.ctx
 			return tea.Batch(s.spin.Tick, async(s, func() tea.Msg {
-				e, err := r.Retracked(ctx, entry, c.Tracking)
+				e, err := r.Confirm(ctx, c)
 				return retrackedMsg{entry: e, err: err}
 			}))
 		}

@@ -334,10 +334,6 @@ func (in *Installer) InstalledSkill(e lock.Entry) (skill.Skill, error) {
 	return skill.LoadDir(dir, dir)
 }
 
-// ErrNoVersion is returned by Retracked when version tracking needs a
-// version that neither the lockfile nor the installed copy has.
-var ErrNoVersion = errors.New("has no version")
-
 // UnknownVersion is recorded for a version-tracked skill whose installed copy
 // declares no version, so any upstream version counts as an update.
 const UnknownVersion = "0.0.0"
@@ -347,7 +343,11 @@ const UnknownVersion = "0.0.0"
 type Choice struct {
 	Tracking lock.Tracking
 	Entry    lock.Entry
-	Err      error
+	// NeedsUpstream is set for version tracking of a skill whose installed
+	// copy declares no version. Entry then records UnknownVersion, and is
+	// only valid when upstream declares a version.
+	NeedsUpstream bool
+	Err           error
 }
 
 // Choices returns the outcome of switching e to each of Trackings, reading
@@ -356,20 +356,18 @@ func (in *Installer) Choices(e lock.Entry) []Choice {
 	c := in.installedCopy(e)
 	out := make([]Choice, 0, len(Trackings))
 	for _, t := range Trackings {
-		next, err := c.retracked(t)
-		out = append(out, Choice{Tracking: t, Entry: next, Err: err})
+		out = append(out, c.retracked(t))
 	}
 	return out
 }
 
-// Retracked returns e as it is recorded after switching it to tracking mode
-// t, or why it cannot switch. Nothing is reinstalled: the recorded content
-// hash is kept, so local edits are still detected, and only computed from the
-// installed copy when the skill was untracked. Switching to hash tracking
-// keeps the recorded version, so version tracking can be restored; without
-// one, the version comes from the installed copy, else ErrNoVersion is
-// returned. The lockfile is not changed.
-func (in *Installer) Retracked(e lock.Entry, t lock.Tracking) (lock.Entry, error) {
+// Retracked returns the outcome of switching e to tracking mode t. Nothing
+// is reinstalled: the recorded content hash is kept, so local edits are still
+// detected, and only computed from the installed copy when the skill was
+// untracked. Switching to hash tracking keeps the recorded version, so
+// version tracking can be restored; without one, the version comes from the
+// installed copy (see Choice.NeedsUpstream). The lockfile is not changed.
+func (in *Installer) Retracked(e lock.Entry, t lock.Tracking) Choice {
 	return in.installedCopy(e).retracked(t)
 }
 
@@ -396,41 +394,47 @@ func (in *Installer) installedCopy(e lock.Entry) installedCopy {
 	}
 }
 
-func (c installedCopy) retracked(t lock.Tracking) (lock.Entry, error) {
-	e := c.entry
+func (c installedCopy) retracked(t lock.Tracking) Choice {
+	e, upstream, err := c.switched(t)
+	if err != nil {
+		return Choice{Tracking: t, Err: err}
+	}
+	return Choice{Tracking: t, Entry: e, NeedsUpstream: upstream}
+}
+
+func (c installedCopy) switched(t lock.Tracking) (e lock.Entry, needsUpstream bool, err error) {
+	e = c.entry
 	if _, err := lock.ParseTracking(string(t)); err != nil {
-		return lock.Entry{}, err
+		return e, false, err
 	}
 	switch {
 	case e.Tracking == t:
-		return e, nil
+		return e, false, nil
 	case e.Pinned:
-		return lock.Entry{}, fmt.Errorf("%s is %s; unpin it first (faehigkeiten update %s --unpin)", e.Name, PinLabel(e.Version), e.Name)
+		return e, false, fmt.Errorf("%s is %s; unpin it first (faehigkeiten update %s --unpin)", e.Name, PinLabel(e.Version), e.Name)
 	case t == lock.TrackNone:
 		e.Tracking, e.Version, e.Hash = t, "", ""
-		return e, nil
+		return e, false, nil
 	case e.Source == "":
-		return lock.Entry{}, fmt.Errorf("%s is managed without a source and cannot be tracked for updates", e.Name)
+		return e, false, fmt.Errorf("%s is managed without a source and cannot be tracked for updates", e.Name)
 	}
 	if t == lock.TrackVersion && e.Version == "" {
 		s, err := c.load()
 		if err != nil {
-			return lock.Entry{}, err
-		}
-		if !s.HasVersion() {
-			return lock.Entry{}, fmt.Errorf("skill %s %w; use hash tracking instead", e.Name, ErrNoVersion)
+			return e, false, err
 		}
 		e.Version = s.Version
+		if !s.HasVersion() {
+			e.Version, needsUpstream = UnknownVersion, true
+		}
 	}
 	if e.Hash == "" {
-		h, err := c.hash()
-		if err != nil {
-			return lock.Entry{}, err
+		if e.Hash, err = c.hash(); err != nil {
+			return e, false, err
 		}
-		e.Hash = h
 	}
 	e.Tracking = t
-	return e, nil
+	return e, needsUpstream, nil
 }
 
 // License returns the license recorded for an entry.
